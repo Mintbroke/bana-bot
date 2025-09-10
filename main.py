@@ -30,6 +30,11 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 guild = discord.Object(id=GUILD_ID)
 num_tickets = 10  # Example user data
 
+def rand1to(num):
+    rand_bytes = os.urandom(4)
+    rand_int = int.from_bytes(rand_bytes, "big")  # convert to integer
+    return (rand_int % num)
+
 def _ensure_schema():
     conn = get_db_connection()
     try:
@@ -88,6 +93,59 @@ class GeneralView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
+class GambleView(discord.ui.View):
+    def __init__(self, answer):
+        self.answer = answer
+        super().__init__(timeout=None)
+    
+    def get_champ_name(self, num):
+        if num == 1:
+            return "Gangplank"
+        elif num == 2:
+            return "Ahri"
+        elif num == 3:
+            return "Yone"
+        elif num == 4:
+            return "Brand"
+        elif num == 5:
+            return "Sylas"
+    
+    @discord.ui.button(label="💣Gangplank", style=discord.ButtonStyle.success)
+
+    async def Gangplank(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.answer == 1:
+            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+        else:
+            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+
+    @discord.ui.button(label="🦊Ahri", style=discord.ButtonStyle.primary)
+    async def Ahri(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.answer == 2:
+            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+        else:
+            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+    
+    @discord.ui.button(label="🗡️Yone", style=discord.ButtonStyle.success)
+    async def Yone(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.answer == 3:
+            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+        else:
+            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+
+    @discord.ui.button(label="🔥Brand", style=discord.ButtonStyle.primary)
+    async def Brand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.answer == 4:
+            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+        else:
+            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+    @discord.ui.button(label="⛓️‍💥Sylas", style=discord.ButtonStyle.success)
+
+    async def Sylas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.answer == 5:
+            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+        else:
+            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+
 
 @bot.tree.command(name="gacha", description="You can spend rare ticket to draw cats in a random banner", guild=guild)
 async def gacha(interaction: discord.Interaction):
@@ -135,7 +193,7 @@ async def daily(interaction: discord.Interaction):
 async def gamble(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Gamble",
-        description="You can gamble your coins for a chance to win rare tickets!\n**[Gamble]**\n- Cost: 1000 Coins\n- Chance to win: 50%\n\n",
+        description="You can gamble your coins for a chance to win rare tickets!\n**[Gamble]**\n- Cost: 1000 Coins\n\n",
         color=0x5865F2,
     )
     file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
@@ -143,7 +201,7 @@ async def gamble(interaction: discord.Interaction):
     # Tell the embed to use the attached file
     embed.set_image(url=file.uri)
 
-    view = GeneralView()
+    view = GambleView(rand1to(5) + 1)
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
 @bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
@@ -221,16 +279,12 @@ async def map(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-def rand1to100():
-    rand_bytes = os.urandom(4)
-    rand_int = int.from_bytes(rand_bytes, "big")  # convert to integer
-    return (rand_int % 100)
-
+# TODO: fix by using universal time
 @bot.tree.command(name="ssal_muck", description="Chance to ssal muck free resources", guild=guild)
 async def ssal_muck(interaction: discord.Interaction):
     scraped, left, cooldown = scrape(GUILD_ID, interaction.user.id, datetime.now(timezone.utc), timedelta(minutes=10))
     if scraped:
-        num = rand1to100()
+        num = rand1to(100)
         reward = "500 coins"
         if num == 1:
             reward = "5 rare ticket"
@@ -243,7 +297,7 @@ async def ssal_muck(interaction: discord.Interaction):
 
         embed = discord.Embed(
             title="SSAL MUCK",
-            description=f"You searched nearby rice field to find resources.\n\n - You found {reward} from nearby rice. \n\n You have {left} more ssal muck left.",
+            description=f"You searched nearby rice field to find resources.\n\n - You found {reward} from nearby rice stash. \n\n You have {30 - left} more ssal muck left today.",
             color=0x5865F2,
         )
     else:
