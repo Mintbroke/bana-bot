@@ -125,29 +125,26 @@ async def gacha(interaction: discord.Interaction):
 
 @bot.tree.command(name="daily", description="Get your daily rewards", guild=guild)
 async def daily(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="Daily",
-        description="You can claim your daily rewards here!\n**[Rewards]**\n- 10x Rare Ticket\n- 1000x Coins\n\n",
-        color=0x5865F2,
-    )
+
     file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
-
-    # Tell the embed to use the attached file
-    embed.set_image(url=file.uri)
-
-
     view = ImageButtons()
-    await interaction.response.send_message(
-            "test"
-    )
-    await interaction.response.send_message(embed=embed, file=file, view=view)
-    await interaction.response.send_message(
-            "Trying to claim daily."
-    )
-    _claim_daily(GUILD_ID, interaction.user.id, datetime.utcnow(), 1000, timedelta(hours=24))
-    await interaction.response.send_message(
-            "Trying to claim daily.", ephemeral=True
-    )
+    daily, bal, ticket, cooldown =_claim_daily(GUILD_ID, interaction.user.id, datetime.utcnow(), 1000, timedelta(hours=24))
+    if daily:
+        embed = discord.Embed(
+            title="Daily",
+            description="You can claim your daily rewards here!\n**[Rewards]**\n- 10x Rare Ticket\n- 1000x Coins\n You have {bal} coins and {ticket} rare tickets.\n\n",
+            color=0x5865F2,
+        )
+        embed.set_image(url=file.uri)
+        await interaction.response.send_message(embed=embed, file=file, view=view)
+    else:
+        embed = discord.Embed(
+            title="Daily",
+            description=f"You have already claimed your daily rewards! Please wait {cooldown//3600} hours and {(cooldown%3600)//60} minutes before claiming again.\n**[Rewards]**\n- 10x Rare Ticket\n- 1000x Coins\n You have {bal} coins and {ticket} rare tickets.\n\n",
+            color=0x5865F2,
+        )
+        embed.set_image(url=file.uri)
+        await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=True)
 
 def _claim_daily(guild_id: int, user_id: int,
                  now_utc: datetime, amount: int, cooldown: timedelta):
@@ -160,6 +157,7 @@ def _claim_daily(guild_id: int, user_id: int,
         with con:
             with con.cursor() as cur:
                 # 1) Try to grant if row exists AND cooldown passed
+                print("Trying to claim daily")
                 cur.execute(
                     """
                     UPDATE test_table1
