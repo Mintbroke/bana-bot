@@ -221,7 +221,7 @@ def rand1to100():
     rand_int = int.from_bytes(rand_bytes, "big")  # convert to integer
     return (rand_int % 100)
 
-@bot.tree.command(name="ssal muck", description="Chance to ssal muck free resources", guild=guild)
+@bot.tree.command(name="ssal_muck", description="Chance to ssal muck free resources", guild=guild)
 async def ssal_muck(interaction: discord.Interaction):
     scraped, left, cooldown = scrape(GUILD_ID, interaction.user.id, datetime.now(timezone.utc), timedelta(minutes=10))
     if scraped:
