@@ -34,7 +34,7 @@ async def runner():
 
     # start the bot
     print("Starting bot")
-    bot_task = asyncio.create_task(bot.start(token))
+    bot_task = asyncio.create_task(bot.run(token))
     await run_health_server()
     await stop.wait()
     await bot_task
