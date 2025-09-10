@@ -7,7 +7,7 @@ from discord.ext import commands
 import psycopg2
 import os
 from dotenv import load_dotenv
-from functions import claim_daily, get_db_connection, scrape
+from functions import claim_daily, get_db_connection, scrape, ssal, getTickets
 load_dotenv()
 
 logging.basicConfig(
@@ -91,9 +91,10 @@ class GeneralView(discord.ui.View):
 
 @bot.tree.command(name="gacha", description="You can spend rare ticket to draw cats in a random banner", guild=guild)
 async def gacha(interaction: discord.Interaction):
+    tickets = getTickets(GUILD_ID, interaction.user.id)
     embed = discord.Embed(
         title="Gacha",
-        description="""You can spend rare ticket to draw cats in a random banner\n\nYour Rare Tickets: 10\n\n
+        description=f"""You can spend rare ticket to draw cats in a random banner\n\nYour Rare Tickets: {tickets}\n\n
         **[Rarity]**\n- Bana Rare Rate: 0.1%\n- Uber Rare Rate: 4.9%\n- Super Rare Rate: 25%\n- Rare Rate: 70%\n\n
         **[Quality]**\n- C: 49%\n- B: 35%\n- A: 15%\n- S: 0.9%\n- SS: 0.1%\n
         """,
@@ -233,8 +234,12 @@ async def ssal_muck(interaction: discord.Interaction):
         reward = "500 coins"
         if num == 1:
             reward = "5 rare ticket"
+            ssal(GUILD_ID, interaction.user.id, 5, 0)
         elif num < 6:
             reward = "1 rare ticket"
+            ssal(GUILD_ID, interaction.user.id, 1, 0)
+        else:
+            ssal(GUILD_ID, interaction.user.id, 0, 500)
 
         embed = discord.Embed(
             title="SSAL MUCK",

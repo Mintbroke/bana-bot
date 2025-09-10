@@ -135,3 +135,60 @@ def scrape(guild_id: int, user_id: int,
                 return False, int(scraped), remaining
     finally:
         con.close()
+
+def ssal(guild_id: int, user_id: int, tickets: int, coins: int,):
+    """
+    Returns: (granted: bool, balance: int, remaining_seconds: int | None)
+    """
+    con = get_db_connection()
+    try:
+        with con:
+            with con.cursor() as cur:
+                # 1) Try to grant if row exists AND cooldown passed
+                log.info("Trying to claim daily")
+                cur.execute(
+                    """
+                    UPDATE test_table1
+                       SET balance = balance + %s,
+                           num_tickets = num_tickets + %s
+                    WHERE guild_id = %s
+                      AND user_id  = %s
+                    """,
+                    (coins, tickets, guild_id, user_id)
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        """
+                        INSERT INTO test_table1 (guild_id, user_id, balance, num_tickets)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (guild_id, user_id, coins, tickets)
+                    )
+    finally:
+        con.close()
+
+def getTickets(guild_id: int, user_id: int):
+    """
+    Returns: (granted: bool, balance: int, remaining_seconds: int | None)
+    """
+    con = get_db_connection()
+    try:
+        with con:
+            with con.cursor() as cur:
+                # 1) Try to grant if row exists AND cooldown passed
+                log.info("Trying to claim daily")
+                cur.execute(
+                    """
+                    SELECT num_tickets
+                    FROM test_table1
+                    WHERE guild_id = %s
+                      AND user_id  = %s
+                    """,
+                    (guild_id, user_id)
+                )
+                row = cur.fetchone()
+                if row:
+                    return int(row[0])
+                return 0
+    finally:
+        con.close()
