@@ -114,37 +114,37 @@ class GambleView(discord.ui.View):
 
     async def Gangplank(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 1:
-            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
         else:
-            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
 
     @discord.ui.button(label="🦊Ahri", style=discord.ButtonStyle.primary)
     async def Ahri(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 2:
-            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
         else:
-            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
     
     @discord.ui.button(label="🗡️Yone", style=discord.ButtonStyle.success)
     async def Yone(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 3:
-            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
         else:
-            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
 
     @discord.ui.button(label="🔥Brand", style=discord.ButtonStyle.primary)
     async def Brand(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 4:
-            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
         else:
-            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
     @discord.ui.button(label="⛓️‍💥Sylas", style=discord.ButtonStyle.success)
 
     async def Sylas(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 5:
-            await interaction.response.send_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
+            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!")
         else:
-            await interaction.response.send_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
+            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.")
 
 
 @bot.tree.command(name="gacha", description="You can spend rare ticket to draw cats in a random banner", guild=guild)
