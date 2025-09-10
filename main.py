@@ -137,7 +137,13 @@ async def daily(interaction: discord.Interaction):
 
 
     view = ImageButtons()
+    await interaction.response.send_message(
+            "test"
+    )
     await interaction.response.send_message(embed=embed, file=file, view=view)
+    await interaction.response.send_message(
+            "Trying to claim daily."
+    )
     _claim_daily(GUILD_ID, interaction.user.id, datetime.utcnow(), 1000, timedelta(hours=24))
     await interaction.response.send_message(
             "Trying to claim daily.", ephemeral=True
