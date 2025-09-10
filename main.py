@@ -238,20 +238,13 @@ async def gamble(interaction: discord.Interaction):
         description="You can gamble your coins for a chance to win rare tickets!\n**[Gamble]**\n- Cost: 1000 Coins\n\n",
         color=0x5865F2,
     )
-    files = [
-        discord.File("assets/rare_ticket.png", filename="rare_ticket.png"),
-        discord.File("assets/gp.png", filename="gp.png"),
-        discord.File("assets/fox.png", filename="fox.png"),
-        discord.File("assets/yon.png", filename="yon.png"),
-        discord.File("assets/b.png", filename="b.png"),
-        discord.File("assets/syl.png", filename="syl.png"),
-    ]
+    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
 
     # Tell the embed to use the attached file
-    embed.set_image(url=files[0].uri)
+    embed.set_image(url=file.uri)
 
     view = GambleView(rand1to(5) + 1)
-    await interaction.response.send_message(embed=embed, files=files, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def deck(interaction: discord.Interaction):
