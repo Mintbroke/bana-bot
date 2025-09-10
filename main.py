@@ -143,7 +143,7 @@ def _claim_daily(guild_id: int, user_id: int,
                        AND user_id  = %s
                        AND (last_daily IS NULL
                             OR EXTRACT(EPOCH FROM (%s - last_daily)) >= %s)
-                    RETURNING balance;
+                    RETURNING balance, tickets;
                     """,
                     (amount, now_utc, guild_id, user_id, now_utc, cooldown_secs)
                 )
@@ -158,7 +158,7 @@ def _claim_daily(guild_id: int, user_id: int,
                     INSERT INTO test_table1 (guild_id, user_id, balance, num_tickets, last_daily)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (guild_id, user_id) DO NOTHING
-                    RETURNING balance;
+                    RETURNING balance, tickets;
                     """,
                     (guild_id, user_id, amount, 10, now_utc)
                 )
