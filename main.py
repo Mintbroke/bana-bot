@@ -58,7 +58,6 @@ def _ensure_schema():
                       PRIMARY KEY (guild_id, user_id)
                     );
                 """)
-                cur.fetchone()
                 print("Ensured schema")
     except Exception as e:
         print(f"Error ensuring schema: {e}")
@@ -244,6 +243,10 @@ async def cats(interaction: discord.Interaction):
 
 @bot.tree.command(name="test", guild=guild)
 async def test(interaction: discord.Interaction):
+    await interaction.response.send_message("Hello World!")
+
+@bot.tree.command(name="test2", guild=guild)
+async def test2(interaction: discord.Interaction):
     await interaction.response.send_message("Hello World!")
 
 @bot.command()
