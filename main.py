@@ -7,7 +7,7 @@ from discord.ext import commands
 import psycopg2
 import os
 from dotenv import load_dotenv
-from functions import _claim_daily, get_db_connection
+from functions import claim_daily, get_db_connection, scrape
 load_dotenv()
 
 logging.basicConfig(
@@ -42,6 +42,16 @@ def _ensure_schema():
                       balance    BIGINT NOT NULL DEFAULT 0,
                       num_tickets BIGINT NOT NULL DEFAULT 0,
                       last_daily TIMESTAMPTZ,
+                      PRIMARY KEY (guild_id, user_id)
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS test_table2 (
+                      guild_id   BIGINT NOT NULL,
+                      user_id    BIGINT NOT NULL,
+                      scraped    BIGINT NOT NULL DEFAULT 0,
+                      date       TIMESTAMPTZ,
+                      last_scraped TIMESTAMPTZ,
                       PRIMARY KEY (guild_id, user_id)
                     );
                 """)
@@ -99,11 +109,11 @@ async def daily(interaction: discord.Interaction):
 
     file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
     view = ImageButtons()
-    daily, bal, ticket, cooldown =_claim_daily(GUILD_ID, interaction.user.id, datetime.now(timezone.utc), 1000, timedelta(hours=24))
+    daily, bal, ticket, cooldown = claim_daily(GUILD_ID, interaction.user.id, datetime.now(timezone.utc), 10000, timedelta(hours=24))
     if daily:
         embed = discord.Embed(
             title="Daily",
-            description=f"You can claim your daily rewards here!\n**[Rewards]**\n- 10x Rare Ticket\n- 1000x Coins\n You have {bal} coins and {ticket} rare tickets.\n\n",
+            description=f"You can claim your daily rewards here!\n**[Rewards]**\n- 10x Rare Ticket\n- 10000x Coins\n\n\n You have {bal} coins and {ticket} rare tickets.\n\n",
             color=0x5865F2,
         )
         embed.set_image(url=file.uri)
@@ -111,7 +121,7 @@ async def daily(interaction: discord.Interaction):
     else:
         embed = discord.Embed(
             title="Daily",
-            description=f"You have already claimed your daily rewards! Please wait {cooldown//3600} hours and {(cooldown%3600)//60} minutes before claiming again.\n**[Rewards]**\n- 10x Rare Ticket\n- 1000x Coins\n You have {bal} coins and {ticket} rare tickets.\n\n",
+            description=f"You have already claimed your daily rewards! Please wait {cooldown//3600} hours and {(cooldown%3600)//60} minutes before claiming again.\n**[Rewards]**\n- 10x Rare Ticket\n- 10000x Coins\n\nn You have {bal} coins and {ticket} rare tickets.\n\n",
             color=0x5865F2,
         )
         await interaction.response.send_message(embed=embed, view=view)
@@ -206,14 +216,34 @@ async def map(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="scrap", description="Chance to win rare ticket", guild=guild)
-async def scrap(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="Scrap",
-        description="Here is your current map:\n**[Map]**\n- Location: Town Center\n- Area: Forest\n\n",
-        color=0x5865F2,
-    )
-    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
+def rand1to100():
+    rand_bytes = os.urandom(4)
+    rand_int = int.from_bytes(rand_bytes, "big")  # convert to integer
+    return (rand_int % 100)
+
+@bot.tree.command(name="ssal muck", description="Chance to ssal muck free resources", guild=guild)
+async def ssal_muck(interaction: discord.Interaction):
+    scraped, left, cooldown = scrape(GUILD_ID, interaction.user.id, datetime.now(timezone.utc), timedelta(minutes=10))
+    if scraped:
+        num = rand1to100()
+        reward = "500 coins"
+        if num == 1:
+            reward = "5 rare ticket"
+        elif num < 6:
+            reward = "1 rare ticket"
+
+        embed = discord.Embed(
+            title="SSAL MUCK",
+            description=f"You searched nearby rice field to find resources.\n\n - You found {reward} from nearby rice. \n\n You have {left} more ssal muck left.",
+            color=0x5865F2,
+        )
+    else:
+        embed = discord.Embed(
+            title="SSAL MUCK",
+            description=f"You need to wait {cooldown // 60} minutes and {cooldown % 60} seconds before next ssal muck. Be more patient to become king of ssal muck!\n\n",
+            color=0x5865F2,
+        )
+    file = discord.File("assets/ssal.png", filename="ssal.png")
 
     # Tell the embed to use the attached file
     embed.set_image(url=file.uri)

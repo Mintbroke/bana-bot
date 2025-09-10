@@ -19,8 +19,7 @@ def get_db_connection():
         os.getenv("DB_URL")
     )
 
-
-def _claim_daily(guild_id: int, user_id: int,
+def claim_daily(guild_id: int, user_id: int,
                  now_utc: datetime, amount: int, cooldown: timedelta):
     """
     Returns: (granted: bool, balance: int, remaining_seconds: int | None)
@@ -75,5 +74,64 @@ def _claim_daily(guild_id: int, user_id: int,
                 delta = (now_utc - last_daily).total_seconds()
                 remaining = max(0, cooldown_secs - int(delta))
                 return False, int(bal), int(ticket), remaining
+    finally:
+        con.close()
+
+def scrape(guild_id: int, user_id: int,
+           now_utc: datetime, cooldown: timedelta):
+    """
+    Returns: (granted: bool, balance: int, remaining_seconds: int | None)
+    """
+    con = get_db_connection()
+    cooldown_secs = int(cooldown.total_seconds())
+    try:
+        with con:
+            with con.cursor() as cur:
+                # 1) Try to grant if row exists AND cooldown passed
+                log.info("Trying to claim daily")
+                cur.execute(
+                    """
+                    UPDATE test_table2
+                    SET scraped = scraped + 1,
+                        date = CURRENT_DATE,
+                        last_scraped = %s
+                    WHERE guild_id = %s
+                    AND user_id  = %s
+                    AND (last_scraped IS NULL
+                            OR %s - last_scraped >= interval '10 minutes')
+                    AND (date IS DISTINCT FROM CURRENT_DATE OR scraped < 30)
+                    RETURNING scraped;
+                    """,
+                    (now_utc, guild_id, user_id, now_utc),
+                )
+                row = cur.fetchone()
+                log.info(row)
+                if row:
+                    return True, int(row[0]), None
+
+                # 2) If not granted, try to INSERT first-time claim
+                cur.execute(
+                    """
+                    INSERT INTO test_table1 (guild_id, user_id, scraped, date, last_scraped)
+                    VALUES (%s, %s, %s, CURRENT_DATE, %s)
+                    ON CONFLICT (guild_id, user_id) DO NOTHING
+                    RETURNING scraped;
+                    """,
+                    (guild_id, user_id, 1, now_utc)
+                )
+                row = cur.fetchone()
+                if row:
+                    # Insert succeeded → first-ever claim granted
+                    return True, int(row[0]), None
+
+                # 3) Row exists but cooldown not met → compute remaining
+                cur.execute(
+                    "SELECT scraped, last_scraped FROM test_table1 WHERE guild_id=%s AND user_id=%s",
+                    (guild_id, user_id)
+                )
+                scraped, last_scraped = cur.fetchone()
+                delta = (now_utc - last_scraped).total_seconds()
+                remaining = max(0, cooldown_secs - int(delta))
+                return False, int(scraped), remaining
     finally:
         con.close()
