@@ -37,7 +37,7 @@ async def runner():
     bot_task = asyncio.create_task(bot.run(token))
     await run_health_server()
     await stop.wait()
-    await bot_task
+    bot_task
 
 async def health(_): 
     return web.Response(text="ok")
