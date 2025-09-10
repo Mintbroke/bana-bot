@@ -1,56 +1,22 @@
 from datetime import timedelta, datetime
 import random
-from aiohttp import web
+import logging as log
 import discord
 from discord import app_commands
 from discord.ext import commands
 import psycopg2
 import os
-import asyncio, signal
 from dotenv import load_dotenv
 load_dotenv()
 
 # Load environment variables or set your credentials here
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-print(DISCORD_TOKEN[:10])
 GUILD_ID = os.getenv("GUILD_ID")
 # Set up database connection
 def get_db_connection():
     return psycopg2.connect(
         os.getenv("DB_URL")
     )
-
-async def runner():
-    token = DISCORD_TOKEN
-    stop = asyncio.Event()
-
-    def _stop():
-        asyncio.get_running_loop().create_task(bot.close())
-        stop.set()
-
-    loop = asyncio.get_running_loop()
-    for s in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(s, _stop)
-
-    # start the bot
-    print("Starting bot")
-    bot_task = asyncio.create_task(bot.start(token))
-    await run_health_server()
-    await stop.wait()
-    await bot_task
-
-async def health(_): 
-    return web.Response(text="ok")
-
-async def run_health_server():
-    app = web.Application()
-    app.router.add_get("/", health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", "8000"))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
 
 # Set up Discord bot
 intents = discord.Intents.default()
@@ -74,15 +40,15 @@ def _ensure_schema():
                       PRIMARY KEY (guild_id, user_id)
                     );
                 """)
-                print("Ensured schema")
+                log.info("Ensured schema")
     except Exception as e:
-        print(f"Error ensuring schema: {e}")
+        log.info(f"Error ensuring schema: {e}")
     finally:
         conn.close()
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
+    log.info(f"Logged in as {bot.user}")
     await bot.tree.sync(guild=guild)
     _ensure_schema()
 
@@ -157,7 +123,7 @@ def _claim_daily(guild_id: int, user_id: int,
         with con:
             with con.cursor() as cur:
                 # 1) Try to grant if row exists AND cooldown passed
-                print("Trying to claim daily")
+                log.info("Trying to claim daily")
                 cur.execute(
                     """
                     UPDATE test_table1
@@ -173,6 +139,7 @@ def _claim_daily(guild_id: int, user_id: int,
                     (amount, now_utc, guild_id, user_id, now_utc, cooldown_secs)
                 )
                 row = cur.fetchone()
+                log.info(row)
                 if row:
                     return True, int(row[0]), int(row[1]), None
 
@@ -346,4 +313,3 @@ async def dbtest(ctx):
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
-    # asyncio.run(runner())
