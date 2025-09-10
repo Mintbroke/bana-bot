@@ -84,6 +84,10 @@ class ImageButtons(discord.ui.View):
             "This is an example button under an image embed.", ephemeral=True
         )
 
+class GeneralView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
 
 @bot.tree.command(name="gacha", description="You can spend rare ticket to draw cats in a random banner", guild=guild)
 async def gacha(interaction: discord.Interaction):
@@ -138,7 +142,7 @@ async def gamble(interaction: discord.Interaction):
     # Tell the embed to use the attached file
     embed.set_image(url=file.uri)
 
-    view = ImageButtons()
+    view = GeneralView()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
 @bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
@@ -248,7 +252,7 @@ async def ssal_muck(interaction: discord.Interaction):
     # Tell the embed to use the attached file
     embed.set_image(url=file.uri)
 
-    view = ImageButtons()
+    view = GeneralView()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
 @bot.tree.command(name="cats", description="View your current map", guild=guild)
