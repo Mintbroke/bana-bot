@@ -24,10 +24,31 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 guild = discord.Object(id=GUILD_ID)
 num_tickets = 10  # Example user data
 
+def _ensure_schema():
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS test_table1 (
+                      guild_id   BIGINT NOT NULL,
+                      user_id    BIGINT NOT NULL,
+                      balance    BIGINT NOT NULL DEFAULT 0,
+                      num_tickets BIGINT NOT NULL DEFAULT 0,
+                      last_daily TIMESTAMPTZ,
+                      PRIMARY KEY (guild_id, user_id)
+                    );
+                """)
+                cur.fetchone()
+                print("Ensured schema")
+    except Exception as e:
+        print(f"Error ensuring schema: {e}")
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
     await bot.tree.sync(guild=guild)
+    _ensure_schema()
 
 class ImageButtons(discord.ui.View):
     def __init__(self):
@@ -52,7 +73,7 @@ async def gacha(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Gacha",
         description="""You can spend rare ticket to draw cats in a random banner\n\nYour Rare Tickets: 10\n\n
-        **[Rarity]**\n- Bana Rare Rate: 0.1%\n Uber Rare Rate: 4.9%\n- Super Rare Rate: 25%\n- Rare Rate: 70%\n\n
+        **[Rarity]**\n- Bana Rare Rate: 0.1%\n- Uber Rare Rate: 4.9%\n- Super Rare Rate: 25%\n- Rare Rate: 70%\n\n
         **[Quality]**\n- C: 49%\n- B: 35%\n- A: 15%\n- S: 0.9%\n- SS: 0.1%\n
         """,
         color=0x5865F2,
