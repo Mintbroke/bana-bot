@@ -251,7 +251,7 @@ async def gamble(interaction: discord.Interaction):
     embed.set_image(url=files[0].uri)
 
     view = GambleView(rand1to(5) + 1)
-    await interaction.response.send_message(embed=embed, file=files, view=view)
+    await interaction.response.send_message(embed=embed, files=files, view=view)
 
 @bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def deck(interaction: discord.Interaction):
