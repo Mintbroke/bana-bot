@@ -1,5 +1,6 @@
 from datetime import timedelta, datetime
 import random
+from aiohttp import web
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -33,8 +34,22 @@ async def runner():
 
     # start the bot
     print("Starting bot")
-    await bot.start(token)
+    bot_task = asyncio.create_task(bot.start(token))
+    await run_health_server()
     await stop.wait()
+    await bot_task
+
+async def health(_): 
+    return web.Response(text="ok")
+
+async def run_health_server():
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "8000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
 
 
 # Set up Discord bot
