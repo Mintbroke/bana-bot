@@ -147,7 +147,7 @@ class GambleView(discord.ui.View):
                 description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
                 color=discord.Color.green()
             )
-            file = discord.File(self.get_image_name(1), filename="rare_ticket.png")
+            file = discord.File(self.get_image_name(1), filename=self.get_image_name(1))
             embed.set_image(url=file.uri)
             await interaction.response.edit_message(embed=embed, view=GambleMoreView())
         else:
@@ -156,7 +156,7 @@ class GambleView(discord.ui.View):
                 description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
-            file = discord.File(self.get_image_name(self.answer), filename="rare_ticket.png")
+            file = discord.File(self.get_image_name(self.answer), filename=self.get_image_name(self.answer))
             embed.set_image(url=file.uri)
             await interaction.response.edit_message(embed=embed, view=GeneralView())
 
