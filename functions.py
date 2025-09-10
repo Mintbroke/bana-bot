@@ -112,7 +112,7 @@ def scrape(guild_id: int, user_id: int,
                 # 2) If not granted, try to INSERT first-time claim
                 cur.execute(
                     """
-                    INSERT INTO test_table1 (guild_id, user_id, scraped, date, last_scraped)
+                    INSERT INTO test_table2 (guild_id, user_id, scraped, date, last_scraped)
                     VALUES (%s, %s, %s, CURRENT_DATE, %s)
                     ON CONFLICT (guild_id, user_id) DO NOTHING
                     RETURNING scraped;
@@ -126,7 +126,7 @@ def scrape(guild_id: int, user_id: int,
 
                 # 3) Row exists but cooldown not met → compute remaining
                 cur.execute(
-                    "SELECT scraped, last_scraped FROM test_table1 WHERE guild_id=%s AND user_id=%s",
+                    "SELECT scraped, last_scraped FROM test_table2 WHERE guild_id=%s AND user_id=%s",
                     (guild_id, user_id)
                 )
                 scraped, last_scraped = cur.fetchone()
