@@ -147,8 +147,7 @@ class GambleView(discord.ui.View):
                 description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
                 color=discord.Color.green()
             )
-            file = discord.File(self.get_image_name(1), filename="gp.png")
-            embed.set_image(url=self.get_image_name(self.answer))
+            embed.set_image(url=None)
             await interaction.response.edit_message(embed=embed, view=GambleMoreView())
         else:
             embed = discord.Embed(
@@ -156,8 +155,7 @@ class GambleView(discord.ui.View):
                 description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
-            file = discord.File(self.get_image_name(self.answer), filename="correct_champ.png")
-            embed.set_image(url=self.get_image_name(self.answer))
+            embed.set_image(url=None)
             await interaction.response.edit_message(embed=embed, view=GeneralView())
 
     @discord.ui.button(label="🦊Ahri", style=discord.ButtonStyle.primary)
@@ -244,7 +242,7 @@ async def gamble(interaction: discord.Interaction):
     embed.set_image(url=file.uri)
 
     view = GambleView(rand1to(5) + 1)
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.response.send_message(embed=embed, file=file, view=view)
 
 @bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def deck(interaction: discord.Interaction):
