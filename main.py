@@ -103,7 +103,7 @@ async def daily(interaction: discord.Interaction):
     if daily:
         embed = discord.Embed(
             title="Daily",
-            description="You can claim your daily rewards here!\n**[Rewards]**\n- 10x Rare Ticket\n- 1000x Coins\n You have {bal} coins and {ticket} rare tickets.\n\n",
+            description=f"You can claim your daily rewards here!\n**[Rewards]**\n- 10x Rare Ticket\n- 1000x Coins\n You have {bal} coins and {ticket} rare tickets.\n\n",
             color=0x5865F2,
         )
         embed.set_image(url=file.uri)
