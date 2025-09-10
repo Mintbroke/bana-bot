@@ -1,4 +1,4 @@
-from datetime import timedelta, datetime
+from datetime import datetime, timezone, timedelta
 import random
 import logging, sys
 import discord
@@ -103,7 +103,7 @@ async def daily(interaction: discord.Interaction):
 
     file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
     view = ImageButtons()
-    daily, bal, ticket, cooldown =_claim_daily(GUILD_ID, interaction.user.id, datetime.utcnow(), 1000, timedelta(hours=24))
+    daily, bal, ticket, cooldown =_claim_daily(GUILD_ID, interaction.user.id, datetime.now(timezone.utc), 1000, timedelta(hours=24))
     if daily:
         embed = discord.Embed(
             title="Daily",
