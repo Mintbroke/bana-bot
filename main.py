@@ -126,7 +126,19 @@ class GambleView(discord.ui.View):
             return "Brand"
         elif num == 5:
             return "Sylas"
-    
+        
+    def get_image_name(self, num):
+        if num == 1:
+            return "assets/gp.png"
+        elif num == 2:
+            return "assets/fox.png"
+        elif num == 3:
+            return "assets/yon.png"
+        elif num == 4:
+            return "assets/b.png"
+        elif num == 5:
+            return "assets/syl.png"
+
     @discord.ui.button(label="💣Gangplank", style=discord.ButtonStyle.success)
     async def Gangplank(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 1:
@@ -135,6 +147,9 @@ class GambleView(discord.ui.View):
                 description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
                 color=discord.Color.green()
             )
+            if interaction.message.attachments:
+                file = discord.File(self.get_image_name(1), filename="rare_ticket.png")
+                embed.set_image(url=file.uri)
             await interaction.response.edit_message(embed=embed, view=GambleMoreView())
         else:
             embed = discord.Embed(
@@ -142,6 +157,9 @@ class GambleView(discord.ui.View):
                 description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
+            if interaction.message.attachments:
+                file = discord.File(self.get_image_name(self.answer), filename="rare_ticket.png")
+                embed.set_image(url=file.uri)
             await interaction.response.edit_message(embed=embed, view=GeneralView())
 
     @discord.ui.button(label="🦊Ahri", style=discord.ButtonStyle.primary)
@@ -151,7 +169,7 @@ class GambleView(discord.ui.View):
         else:
             await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.", view=self)
     
-    @discord.ui.button(label="🗡️Yone", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="🗡️Yone", style=discord.ButtonStyle.primary)
     async def Yone(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 3:
             await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!", view=self)
@@ -164,7 +182,7 @@ class GambleView(discord.ui.View):
             await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!", view=self)
         else:
             await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.", view=self)
-    @discord.ui.button(label="⛓️‍💥Sylas", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="⛓️‍💥Sylas", style=discord.ButtonStyle.primary)
 
     async def Sylas(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 5:
