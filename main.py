@@ -341,5 +341,5 @@ async def dbtest(ctx):
         await ctx.send(f"DB Error: {e}")
 
 if __name__ == "__main__":
-    # bot.run(DISCORD_TOKEN)
-    asyncio.run(runner())
+    bot.run(DISCORD_TOKEN)
+    # asyncio.run(runner())
