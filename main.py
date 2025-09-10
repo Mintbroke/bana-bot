@@ -9,6 +9,7 @@ load_dotenv()
 
 # Load environment variables or set your credentials here
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+print(DISCORD_TOKEN[:10])
 GUILD_ID = os.getenv("GUILD_ID")
 # Set up database connection
 def get_db_connection():
