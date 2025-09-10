@@ -4,3 +4,6 @@ builder = "dockerfile"
 [deploy]
 restartPolicyType = "always"
 startCommand = "python main.py"
+
+[tool.poetry.dependencies]
+python = "^3.13."
