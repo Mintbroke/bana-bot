@@ -26,7 +26,6 @@ num_tickets = 10  # Example user data
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    bot.tree.clear_commands(guild=guild)
     await bot.tree.sync(guild=guild)
 
 class ImageButtons(discord.ui.View):
@@ -47,12 +46,12 @@ class ImageButtons(discord.ui.View):
         )
 
 
-@bot.tree.command(name="gacha", description="You can spend rare ticket to draw cats in a random banner")
+@bot.tree.command(name="gacha", description="You can spend rare ticket to draw cats in a random banner", guild=guild)
 async def gacha(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Gacha",
         description="""You can spend rare ticket to draw cats in a random banner\n\nYour Rare Tickets: 10\n\n
-        **[Rarity]**\n- Uber Rare Rate: 5%\n- Super Rare Rate: 25%\n- Rare Rate: 70%\n\n
+        **[Rarity]**\n- Bana Rare Rate: 0.1%\n Uber Rare Rate: 4.9%\n- Super Rare Rate: 25%\n- Rare Rate: 70%\n\n
         **[Quality]**\n- C: 49%\n- B: 35%\n- A: 15%\n- S: 0.9%\n- SS: 0.1%\n
         """,
         color=0x5865F2,
@@ -66,7 +65,7 @@ async def gacha(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="daily", description="Get your daily rewards")
+@bot.tree.command(name="daily", description="Get your daily rewards", guild=guild)
 async def daily(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Daily",
@@ -82,7 +81,7 @@ async def daily(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="gamble", description="Gamble your coins for a chance to win rare tickets")
+@bot.tree.command(name="gamble", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def gamble(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Gamble",
@@ -97,7 +96,7 @@ async def gamble(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets")
+@bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def deck(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Gamble",
@@ -112,7 +111,7 @@ async def deck(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="stats", description="View your current stats")
+@bot.tree.command(name="stats", description="View your current stats", guild=guild)
 async def stats(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Stats",
@@ -127,7 +126,7 @@ async def stats(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="inventory", description="View your current inventory")
+@bot.tree.command(name="inventory", description="View your current inventory", guild=guild)
 async def inventory(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Inventory",
@@ -142,7 +141,7 @@ async def inventory(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="upgrade", description="Upgrade your inventory")
+@bot.tree.command(name="upgrade", description="Upgrade your inventory", guild=guild)
 async def upgrade(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Upgrade",
@@ -157,7 +156,7 @@ async def upgrade(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="map", description="View your current map")
+@bot.tree.command(name="map", description="View your current map", guild=guild)
 async def map(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Map",
@@ -172,7 +171,37 @@ async def map(interaction: discord.Interaction):
     view = ImageButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
-@bot.tree.command(name="test")
+@bot.tree.command(name="scrap", description="Chance to win rare ticket", guild=guild)
+async def scrap(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Scrap",
+        description="Here is your current map:\n**[Map]**\n- Location: Town Center\n- Area: Forest\n\n",
+        color=0x5865F2,
+    )
+    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
+
+    # Tell the embed to use the attached file
+    embed.set_image(url=file.uri)
+
+    view = ImageButtons()
+    await interaction.response.send_message(embed=embed, file=file, view=view)
+
+@bot.tree.command(name="cats", description="View your current map", guild=guild)
+async def cats(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Cats",
+        description="Here is your current map:\n**[Map]**\n- Location: Town Center\n- Area: Forest\n\n",
+        color=0x5865F2,
+    )
+    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
+
+    # Tell the embed to use the attached file
+    embed.set_image(url=file.uri)
+
+    view = ImageButtons()
+    await interaction.response.send_message(embed=embed, file=file, view=view)
+
+@bot.tree.command(name="test", guild=guild)
 async def test(interaction: discord.Interaction):
     await interaction.response.send_message("Hello World!")
 
