@@ -1,6 +1,6 @@
 from datetime import timedelta, datetime
 import random
-import logging as log
+import logging, sys
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -9,9 +9,18 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,  # <- stdout so Railway won’t flag as error
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+)
+# Optional: let discord.py set up its own handlers *without* attaching to root
+discord.utils.setup_logging(level=logging.INFO, root=False)
+log = logging.getLogger("bot")
+
 # Load environment variables or set your credentials here
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")
+GUILD_ID = int(os.getenv("GUILD_ID"))
 # Set up database connection
 def get_db_connection():
     return psycopg2.connect(
