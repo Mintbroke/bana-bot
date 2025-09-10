@@ -4,6 +4,7 @@ from discord import app_commands
 from discord.ext import commands
 import psycopg2
 import os
+import asyncio, signal
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -16,6 +17,23 @@ def get_db_connection():
     return psycopg2.connect(
         os.getenv("DB_URL")
     )
+
+async def runner():
+    token = DISCORD_TOKEN
+    stop = asyncio.Event()
+
+    def _stop():
+        asyncio.get_running_loop().create_task(bot.close())
+        stop.set()
+
+    loop = asyncio.get_running_loop()
+    for s in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(s, _stop)
+
+    # start the bot
+    await bot.start(token)
+    await stop.wait()
+
 
 # Set up Discord bot
 intents = discord.Intents.default()
@@ -241,4 +259,4 @@ async def dbtest(ctx):
         await ctx.send(f"DB Error: {e}")
 
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+    asyncio.run(runner())
