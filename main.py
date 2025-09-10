@@ -31,6 +31,7 @@ async def runner():
         loop.add_signal_handler(s, _stop)
 
     # start the bot
+    print("Starting bot")
     await bot.start(token)
     await stop.wait()
 
