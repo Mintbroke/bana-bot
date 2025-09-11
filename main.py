@@ -233,16 +233,14 @@ async def daily(interaction: discord.Interaction):
 async def gamble(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Gamble",
-        description="You can gamble your coins for a chance to win rare tickets!\n**[Gamble]**\n- Cost: 1000 Coins\n\n",
+        description="You can gamble your coins for a chance to win rare tickets!\n**[Gamble]**\n- Cost: 1000 Coins\n\n Pick a most broken champion in league of legends\n\n",
         color=0x5865F2,
     )
-    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
-
     # Tell the embed to use the attached file
-    embed.set_image(url=file.uri)
+    embed.set_image(url="https://cdn.discordapp.com/attachments/928447198746804265/1415487869186998374/rare_ticket.png?ex=68c3634e&is=68c211ce&hm=c53191b9bc20f1ba393755d9b84735a6c99a069ad6b60d84e0e7124fed18eb02&")
 
     view = GambleView(rand1to(5) + 1)
-    await interaction.response.send_message(embed=embed, file=file, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def deck(interaction: discord.Interaction):
