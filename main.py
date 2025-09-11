@@ -106,7 +106,16 @@ class GambleMoreView(discord.ui.View):
 
     @discord.ui.button(label="Nah I'd win", style=discord.ButtonStyle.danger)
     async def win(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await gamble(interaction, multiplier=self.tickets*2)
+        embed = discord.Embed(
+            title="Gamble",
+            description=f"Pick a most broken champion in league of legends\n\n Your Current Stake: {self.tickets} rare ticket\n\n",
+            color=0x5865F2,
+        )
+        # Tell the embed to use the attached file
+        embed.set_image(url="https://cdn.discordapp.com/attachments/928447198746804265/1415487869186998374/rare_ticket.png?ex=68c3634e&is=68c211ce&hm=c53191b9bc20f1ba393755d9b84735a6c99a069ad6b60d84e0e7124fed18eb02&")
+
+        view = GambleView(rand1to(5) + 1, mult=self.tickets * 2)
+        await interaction.response.send_message(embed=embed, view=view)
     
 class GambleView(discord.ui.View):
     def __init__(self, answer, mult):
