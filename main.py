@@ -94,25 +94,24 @@ class GeneralView(discord.ui.View):
         super().__init__(timeout=None)
 
 class GambleMoreView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, mult):
         super().__init__(timeout=None)
-        self.likes = 0
+        self.tickets = mult
 
     @discord.ui.button(label="Claim", style=discord.ButtonStyle.success)
-    async def draw(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            f"You are drawing!"
+            f"Successfully Claimed {self.tickets} tickets!"
         )
 
     @discord.ui.button(label="Nah I'd win", style=discord.ButtonStyle.danger)
-    async def rate(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            "This is an example button under an image embed."
-        )
+    async def win(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await gamble(interaction, multiplier=self.tickets*2)
     
 class GambleView(discord.ui.View):
-    def __init__(self, answer):
+    def __init__(self, answer, mult):
         self.answer = answer
+        self.mult = mult
         super().__init__(timeout=None)
     
     def get_champ_name(self, num):
@@ -144,11 +143,11 @@ class GambleView(discord.ui.View):
         if self.answer == 1:
             embed = discord.Embed(
                 title="Result!",
-                description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
+                description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for {self.mult*2} ticket?",
                 color=discord.Color.green()
             )
             embed.set_image(url=self.get_image_path(self.answer))
-            await interaction.response.edit_message(embed=embed, view=GambleMoreView())
+            await interaction.response.edit_message(embed=embed, view=GambleMoreView(mult=self.mult*2))
         else:
             embed = discord.Embed(
                 title="Result!",
@@ -278,7 +277,7 @@ async def daily(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="gamble", description="Gamble your coins for a chance to win rare tickets", guild=guild)
-async def gamble(interaction: discord.Interaction):
+async def gamble(interaction: discord.Interaction, multiplier: int = 1):
     embed = discord.Embed(
         title="Gamble",
         description="You can gamble your coins for a chance to win rare tickets!\n**[Gamble]**\n- Cost: 1000 Coins\n\n Pick a most broken champion in league of legends\n\n",
@@ -287,7 +286,7 @@ async def gamble(interaction: discord.Interaction):
     # Tell the embed to use the attached file
     embed.set_image(url="https://cdn.discordapp.com/attachments/928447198746804265/1415487869186998374/rare_ticket.png?ex=68c3634e&is=68c211ce&hm=c53191b9bc20f1ba393755d9b84735a6c99a069ad6b60d84e0e7124fed18eb02&")
 
-    view = GambleView(rand1to(5) + 1)
+    view = GambleView(rand1to(5) + 1, mult=multiplier)
     await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
