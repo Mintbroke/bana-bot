@@ -307,77 +307,54 @@ async def gamble(interaction: discord.Interaction, multiplier: int = 1):
 @bot.tree.command(name="deck", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def deck(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="Gamble",
-        description="You can gamble your coins for a chance to win rare tickets!\n**[Gamble]**\n- Cost: 1000 Coins\n- Chance to win: 50%\n\n",
+        title="Deck",
+        description="Not implemented\n",
         color=0x5865F2,
     )
-    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
-
-    # Tell the embed to use the attached file
-    embed.set_image(url=file.uri)
 
     view = ImageButtons()
-    await interaction.response.send_message(embed=embed, file=file, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="stats", description="View your current stats", guild=guild)
 async def stats(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Stats",
-        description="Here are your current stats:\n**[Stats]**\n- Rare Tickets: 10\n- Coins: 1000\n\n",
+        description="Not implemented\n",
         color=0x5865F2,
     )
-    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
-
-    # Tell the embed to use the attached file
-    embed.set_image(url=file.uri)
-
     view = ImageButtons()
-    await interaction.response.send_message(embed=embed, file=file, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="inventory", description="View your current inventory", guild=guild)
 async def inventory(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Inventory",
-        description="Here are the items in your inventory:\n**[Inventory]**\n- Rare Ticket: 5\n- Common Ticket: 10\n\n",
+        description="Not implemented\n",
         color=0x5865F2,
     )
-    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
-
-    # Tell the embed to use the attached file
-    embed.set_image(url=file.uri)
 
     view = ImageButtons()
-    await interaction.response.send_message(embed=embed, file=file, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="upgrade", description="Upgrade your inventory", guild=guild)
 async def upgrade(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Upgrade",
-        description="You can upgrade your inventory here!\n**[Upgrade]**\n- Cost: 5000 Coins\n- Benefits: More slots for items\n\n",
+        description="Not implemented\n",
         color=0x5865F2,
     )
-    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
-
-    # Tell the embed to use the attached file
-    embed.set_image(url=file.uri)
-
     view = ImageButtons()
-    await interaction.response.send_message(embed=embed, file=file, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="map", description="View your current map", guild=guild)
 async def map(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Map",
-        description="Here is your current map:\n**[Map]**\n- Location: Town Center\n- Area: Forest\n\n",
+        description="Not implemented\n",
         color=0x5865F2,
     )
-    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
-
-    # Tell the embed to use the attached file
-    embed.set_image(url=file.uri)
-
     view = ImageButtons()
-    await interaction.response.send_message(embed=embed, file=file, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 # TODO: fix by using universal time
 @bot.tree.command(name="ssal_muck", description="Chance to ssal muck free resources", guild=guild)
@@ -418,16 +395,12 @@ async def ssal_muck(interaction: discord.Interaction):
 async def cats(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Cats",
-        description="Here is your current map:\n**[Map]**\n- Location: Town Center\n- Area: Forest\n\n",
+        description="Not implemented\n",
         color=0x5865F2,
     )
-    file = discord.File("assets/rare_ticket.png", filename="rare_ticket.png")
-
-    # Tell the embed to use the attached file
-    embed.set_image(url=file.uri)
 
     view = ImageButtons()
-    await interaction.response.send_message(embed=embed, file=file, view=view)
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="test", guild=guild)
 async def test(interaction: discord.Interaction):
