@@ -93,6 +93,7 @@ class GeneralView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
+# TODO: validate user
 class GambleMoreView(discord.ui.View):
     def __init__(self, mult):
         super().__init__(timeout=None)
@@ -100,8 +101,13 @@ class GambleMoreView(discord.ui.View):
 
     @discord.ui.button(label="Claim", style=discord.ButtonStyle.success)
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            f"Successfully Claimed {self.tickets} tickets!"
+        embed = discord.Embed(
+            title="Reward",
+            description=f"You successfully claimed {self.tickets} rare tickets!\n\n",
+            color=0x5865F2,
+        )
+        await interaction.response.edit_message(
+            embed=embed, view=GeneralView()
         )
 
     @discord.ui.button(label="Nah I'd win", style=discord.ButtonStyle.danger)
@@ -160,7 +166,7 @@ class GambleView(discord.ui.View):
         else:
             embed = discord.Embed(
                 title="Result!",
-                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                description=f"Wrong! Your guess: GangPlank\n\nBroken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
             embed.set_image(url=self.get_image_path(self.answer))
@@ -179,7 +185,7 @@ class GambleView(discord.ui.View):
         else:
             embed = discord.Embed(
                 title="Result!",
-                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                description=f"Wrong! Your guess: Ahri\n\nBroken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
             embed.set_image(url=self.get_image_path(self.answer))
@@ -198,7 +204,7 @@ class GambleView(discord.ui.View):
         else:
             embed = discord.Embed(
                 title="Result!",
-                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                description=f"Wrong! Your guess: Yone\n\nBroken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
             embed.set_image(url=self.get_image_path(self.answer))
@@ -217,7 +223,7 @@ class GambleView(discord.ui.View):
         else:
             embed = discord.Embed(
                 title="Result!",
-                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                description=f"Wrong! Your guess: Brand\n\nBroken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
             embed.set_image(url=self.get_image_path(self.answer))
@@ -236,7 +242,7 @@ class GambleView(discord.ui.View):
         else:
             embed = discord.Embed(
                 title="Result!",
-                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                description=f"Wrong! Your guess: Sylas\n\nBroken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
             embed.set_image(url=self.get_image_path(self.answer))
