@@ -127,17 +127,17 @@ class GambleView(discord.ui.View):
         elif num == 5:
             return "Sylas"
         
-    def get_image_name(self, num):
+    def get_image_path(self, num):
         if num == 1:
-            return "assets/gp.png"
+            return "https://cdn.discordapp.com/attachments/928447198746804265/1415487870872846406/gp.png?ex=68c3634e&is=68c211ce&hm=cadbc14372766f3741290f43431c197fc38fe9e974bf2c05d342859e6fbf2fe2&"
         elif num == 2:
-            return "assets/fox.png"
+            return "https://cdn.discordapp.com/attachments/928447198746804265/1415487869514022922/fox.png?ex=68c3634e&is=68c211ce&hm=f3ff970d515024b29543d66b507a4b0a068eba8a740a4569527349ddfe356c3b&"
         elif num == 3:
-            return "assets/yon.png"
+            return "https://cdn.discordapp.com/attachments/928447198746804265/1415487870537433098/yon.png?ex=68c3634e&is=68c211ce&hm=6cf34a776c34a770d57fb4b6b67bd6faec09a3e10a0d81808dd9333548602003&"
         elif num == 4:
-            return "assets/b.png"
+            return "https://cdn.discordapp.com/attachments/928447198746804265/1415487869828464801/b.png?ex=68c3634e&is=68c211ce&hm=9e900d02a3887ff36bc00225d4666761a95543bb8c761b841915ceda8c1c730f&"
         elif num == 5:
-            return "assets/syl.png"
+            return "https://cdn.discordapp.com/attachments/928447198746804265/1415487870202019871/syl.png?ex=68c3634e&is=68c211ce&hm=ecee15df2286c99bea0ede234c52f81e3c7958322dc4ebc2a7dd4656d1412046&"
 
     @discord.ui.button(label="💣Gangplank", style=discord.ButtonStyle.primary)
     async def Gangplank(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -147,7 +147,7 @@ class GambleView(discord.ui.View):
                 description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
                 color=discord.Color.green()
             )
-            embed.set_image(url=None)
+            embed.set_image(url=self.get_image_path(self.answer))
             await interaction.response.edit_message(embed=embed, view=GambleMoreView())
         else:
             embed = discord.Embed(
@@ -155,36 +155,84 @@ class GambleView(discord.ui.View):
                 description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
                 color=discord.Color.red()
             )
-            embed.set_image(url=None)
+            embed.set_image(url=self.get_image_path(self.answer))
             await interaction.response.edit_message(embed=embed, view=GeneralView())
 
     @discord.ui.button(label="🦊Ahri", style=discord.ButtonStyle.primary)
     async def Ahri(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 2:
-            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!", view=self)
+            embed = discord.Embed(
+                title="Result!",
+                description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
+                color=discord.Color.green()
+            )
+            embed.set_image(url=self.get_image_path(self.answer))
+            await interaction.response.edit_message(embed=embed, view=GambleMoreView())
         else:
-            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.", view=self)
+            embed = discord.Embed(
+                title="Result!",
+                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                color=discord.Color.red()
+            )
+            embed.set_image(url=self.get_image_path(self.answer))
+            await interaction.response.edit_message(embed=embed, view=GeneralView())
     
     @discord.ui.button(label="🗡️Yone", style=discord.ButtonStyle.primary)
     async def Yone(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 3:
-            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!", view=self)
+            embed = discord.Embed(
+                title="Result!",
+                description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
+                color=discord.Color.green()
+            )
+            embed.set_image(url=self.get_image_path(self.answer))
+            await interaction.response.edit_message(embed=embed, view=GambleMoreView())
         else:
-            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.", view=self)
+            embed = discord.Embed(
+                title="Result!",
+                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                color=discord.Color.red()
+            )
+            embed.set_image(url=self.get_image_path(self.answer))
+            await interaction.response.edit_message(embed=embed, view=GeneralView())
 
     @discord.ui.button(label="🔥Brand", style=discord.ButtonStyle.primary)
     async def Brand(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 4:
-            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!", view=self)
+            embed = discord.Embed(
+                title="Result!",
+                description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
+                color=discord.Color.green()
+            )
+            embed.set_image(url=self.get_image_path(self.answer))
+            await interaction.response.edit_message(embed=embed, view=GambleMoreView())
         else:
-            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.", view=self)
+            embed = discord.Embed(
+                title="Result!",
+                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                color=discord.Color.red()
+            )
+            embed.set_image(url=self.get_image_path(self.answer))
+            await interaction.response.edit_message(embed=embed, view=GeneralView())
     @discord.ui.button(label="⛓️‍💥Sylas", style=discord.ButtonStyle.primary)
 
     async def Sylas(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.answer == 5:
-            await interaction.response.edit_message(f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ!", view=self)
+            embed = discord.Embed(
+                title="Result!",
+                description=f"You are correct! You are rewarded with 1 rare ticket for finding a broken champ! \n\n Would you be 99% of gamblers and claim your reward or be the 1% and gamble for double ticket?",
+                color=discord.Color.green()
+            )
+            embed.set_image(url=self.get_image_path(self.answer))
+            await interaction.response.edit_message(embed=embed, view=GambleMoreView())
         else:
-            await interaction.response.edit_message(f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.", view=self)
+            embed = discord.Embed(
+                title="Result!",
+                description=f"Wrong! Broken champ was {self.get_champ_name(self.answer)}. Better luck next time.",
+                color=discord.Color.red()
+            )
+            embed.set_image(url=self.get_image_path(self.answer))
+            await interaction.response.edit_message(embed=embed, view=GeneralView())
 
 
 @bot.tree.command(name="gacha", description="You can spend rare ticket to draw cats in a random banner", guild=guild)
