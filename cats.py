@@ -7,7 +7,7 @@ class Rarity(enum.Enum):
     RARE: int = 4
 
 class cat:
-    def __init__(self, name, banner, rarity: Rarity, quality, image_url):
+    def __init__(self, name, banner, rarity: int, quality, image_url):
         self.name = name
         self.banner = banner
         self.rarity = rarity
@@ -24,5 +24,4 @@ class cat:
             self.name = "Super Rare Cat"
         if self.rarity == Rarity.RARE:
             self.name = "Rare Cat"
-    
     

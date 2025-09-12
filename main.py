@@ -104,6 +104,7 @@ class GachaButtons(discord.ui.View):
         log.info("got quality...")
         banner = rand1to(14)
         bannerStr = ""
+
                 
         log.info(f"Drawn cat: Rarity={rarity}, Quality={quality}, Banner={bannerStr}")
         cat = cat(name="", banner=bannerStr, rarity=rarity, quality=quality, image_url="")
