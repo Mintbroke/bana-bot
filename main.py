@@ -335,7 +335,7 @@ async def gacha(interaction: discord.Interaction):
     embed.set_image(url=file.uri)
 
 
-    view = ImageButtons()
+    view = GachaButtons()
     await interaction.response.send_message(embed=embed, file=file, view=view)
 
 @bot.tree.command(name="daily", description="Get your daily rewards", guild=guild)
