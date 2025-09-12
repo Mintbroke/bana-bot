@@ -89,6 +89,7 @@ class GachaButtons(discord.ui.View):
             rarity = Rarity.UBER_RARE
         elif cat <= 300:
             rarity = Rarity.SUPER_RARE
+        log.info("got rarity...")
 
         qual = rand1to(1000) + 1
         quality = "C"
@@ -100,37 +101,10 @@ class GachaButtons(discord.ui.View):
             quality = "A"
         elif qual <= 500:
             quality = "B"
+        log.info("got quality...")
         banner = rand1to(14)
         bannerStr = ""
-        match banner:
-            case 0:
-                return
-            case 1:
-                return
-            case 2:
-                return
-            case 3:
-                return
-            case 4:
-                return
-            case 5:
-                return
-            case 6:
-                return
-            case 7:
-                return
-            case 8:
-                return
-            case 9:
-                return
-            case 10:
-                return
-            case 11:
-                return
-            case 12:
-                return
-            case 13:
-                return
+                
         log.info(f"Drawn cat: Rarity={rarity}, Quality={quality}, Banner={bannerStr}")
         cat = cat(name="", banner=bannerStr, rarity=rarity, quality=quality, image_url="")
         log.info(cat.name)
