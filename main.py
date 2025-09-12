@@ -6,7 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 import psycopg2
 import os
-from cats import Rarity, cat
+from cats import Rarity, Cat
 from dotenv import load_dotenv
 from functions import claim_daily, get_db_connection, scrape, ssal, getTickets
 load_dotenv()
@@ -107,7 +107,7 @@ class GachaButtons(discord.ui.View):
 
                 
         log.info(f"Drawn cat: Rarity={rarity}, Quality={quality}, Banner={bannerStr}")
-        cat = cat(name="", banner=bannerStr, rarity=rarity, quality=quality, image_url="")
+        cat = Cat(name="", banner=bannerStr, rarity=rarity, quality=quality, image_url="")
         log.info(cat.name)
 
         await interaction.response.send_message(

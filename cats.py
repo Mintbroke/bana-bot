@@ -6,7 +6,7 @@ class Rarity(enum.Enum):
     SUPER_RARE: int = 3
     RARE: int = 4
 
-class cat:
+class Cat:
     def __init__(self, name, banner, rarity: int, quality, image_url):
         self.name = name
         self.banner = banner
