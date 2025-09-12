@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 import psycopg2
 import os
+from cats import Rarity, cat
 from dotenv import load_dotenv
 from functions import claim_daily, get_db_connection, scrape, ssal, getTickets
 load_dotenv()
@@ -71,6 +72,74 @@ async def on_ready():
     log.info(f"Logged in as {bot.user}")
     await bot.tree.sync(guild=guild)
     _ensure_schema()
+
+class GachaButtons(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.likes = 0
+
+    @discord.ui.button(label="Draw", style=discord.ButtonStyle.success)
+    async def draw(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cat = rand1to(1000) + 1
+        rarity: Rarity = Rarity.RARE
+        if cat == 1:
+            rarity = Rarity.BANA_RARE
+        elif cat <= 50:
+            rarity = Rarity.UBER_RARE
+        elif cat <= 300:
+            rarity = Rarity.SUPER_RARE
+
+        qual = rand1to(1000) + 1
+        quality = "C"
+        if qual == 1:
+            quality = "SS"
+        elif qual < 11:
+            quality = "S"
+        elif qual <= 150:
+            quality = "A"
+        elif qual <= 500:
+            quality = "B"
+        banner = rand1to(14)
+        bannerStr = ""
+        match banner:
+            case 0:
+                return
+            case 1:
+                return
+            case 2:
+                return
+            case 3:
+                return
+            case 4:
+                return
+            case 5:
+                return
+            case 6:
+                return
+            case 7:
+                return
+            case 8:
+                return
+            case 9:
+                return
+            case 10:
+                return
+            case 11:
+                return
+            case 12:
+                return
+            case 13:
+                return
+        cat = cat(name="", banner=bannerStr, rarity=rarity, quality=quality, image_url="")
+
+        await interaction.response.send_message(
+            f"You drew {cat.name}!")
+
+    @discord.ui.button(label="View Rates", style=discord.ButtonStyle.primary)
+    async def rate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "This is an example button under an image embed.", ephemeral=True
+        )
 
 class ImageButtons(discord.ui.View):
     def __init__(self):
@@ -255,7 +324,7 @@ async def gacha(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Gacha",
         description=f"""You can spend rare ticket to draw cats in a random banner\n\nYour Rare Tickets: {tickets}\n\n
-        **[Rarity]**\n- Bana Rare Rate: 0.1%\n- Uber Rare Rate: 4.9%\n- Super Rare Rate: 25%\n- Rare Rate: 70%\n\n
+        **[Rarity]**\n- Bana Rare: 0.1%\n- Uber Rare: 4.9%\n- Super Rare: 25%\n- Rare: 70%\n\n
         **[Quality]**\n- C: 49%\n- B: 35%\n- A: 15%\n- S: 0.9%\n- SS: 0.1%\n
         """,
         color=0x5865F2,
