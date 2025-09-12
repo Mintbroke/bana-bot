@@ -80,6 +80,7 @@ class GachaButtons(discord.ui.View):
 
     @discord.ui.button(label="Draw", style=discord.ButtonStyle.success)
     async def draw(self, interaction: discord.Interaction, button: discord.ui.Button):
+        log.info("Drawing a cat...")
         cat = rand1to(1000) + 1
         rarity: Rarity = Rarity.RARE
         if cat == 1:
