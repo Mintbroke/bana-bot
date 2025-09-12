@@ -88,7 +88,7 @@ def scrape(guild_id: int, user_id: int,
         with con:
             with con.cursor() as cur:
                 # 1) Try to grant if row exists AND cooldown passed
-                log.info("Trying to claim daily")
+                log.info("Trying to scrape")
                 cur.execute(
                     """
                     UPDATE test_table2
@@ -145,7 +145,7 @@ def ssal(guild_id: int, user_id: int, tickets: int, coins: int,):
         with con:
             with con.cursor() as cur:
                 # 1) Try to grant if row exists AND cooldown passed
-                log.info("Trying to claim daily")
+                log.info("Trying to update balance and tickets")
                 cur.execute(
                     """
                     UPDATE test_table1
@@ -176,7 +176,7 @@ def getTickets(guild_id: int, user_id: int):
         with con:
             with con.cursor() as cur:
                 # 1) Try to grant if row exists AND cooldown passed
-                log.info("Trying to claim daily")
+                log.info("Trying to get tickets")
                 cur.execute(
                     """
                     SELECT num_tickets

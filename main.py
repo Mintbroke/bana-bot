@@ -131,7 +131,9 @@ class GachaButtons(discord.ui.View):
                 return
             case 13:
                 return
+        log.info(f"Drawn cat: Rarity={rarity}, Quality={quality}, Banner={bannerStr}")
         cat = cat(name="", banner=bannerStr, rarity=rarity, quality=quality, image_url="")
+        log.info(cat.name)
 
         await interaction.response.send_message(
             f"You drew {cat.name}!")
