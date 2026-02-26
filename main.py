@@ -1,3 +1,4 @@
+from asyncio import tasks
 from datetime import datetime, timezone, timedelta
 import random
 import logging, sys
@@ -23,6 +24,7 @@ log = logging.getLogger("bot")
 # Load environment variables or set your credentials here
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
+USER_ID = int(os.getenv("USER_ID"))
 
 # Set up Discord bot
 intents = discord.Intents.default()
@@ -67,11 +69,14 @@ def _ensure_schema():
     finally:
         conn.close()
 
+names = ["Balrog", "Luna", "Dasli", "Luno"]
+
 @bot.event
 async def on_ready():
     log.info(f"Logged in as {bot.user}")
     await bot.tree.sync(guild=guild)
     _ensure_schema()
+    rename_loop.start()
 
 class GachaButtons(discord.ui.View):
     def __init__(self):
@@ -337,6 +342,24 @@ async def daily(interaction: discord.Interaction):
             color=0x5865F2,
         )
         await interaction.response.send_message(embed=embed, view=view)
+
+
+
+@tasks.loop(seconds=5)
+async def rename_loop():
+    global index
+
+    guild = bot.get_guild(GUILD_ID)
+    member = guild.get_member(USER_ID)
+    username = member.name
+    name_split = username.split("-")
+    days = int(name_split[1]) - 1
+    new_name = name_split[0] + " " + str(days)
+
+    if member:
+        await member.edit(nick=new_name)
+        index = (index + 1) % len(names)
+
 
 @bot.tree.command(name="gamble", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def gamble(interaction: discord.Interaction, multiplier: int = 1):
