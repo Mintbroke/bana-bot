@@ -1,4 +1,4 @@
-from asyncio import tasks
+from discord.ext import tasks
 from datetime import datetime, timezone, timedelta
 import random
 import logging, sys
