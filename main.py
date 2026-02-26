@@ -354,11 +354,10 @@ async def rename_loop():
     username = member.nick
     name_split = username.split("-")
     days = int(name_split[1]) - 1
-    new_name = name_split[0] + " " + str(days)
+    new_name = name_split[0] + "-" + str(days)
 
     if member:
         await member.edit(nick=new_name)
-        index = (index + 1) % len(names)
 
 
 @bot.tree.command(name="gamble", description="Gamble your coins for a chance to win rare tickets", guild=guild)
