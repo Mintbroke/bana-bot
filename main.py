@@ -345,7 +345,7 @@ async def daily(interaction: discord.Interaction):
 
 
 
-@tasks.loop(seconds=5)
+@tasks.loop(hours=24)
 async def rename_loop():
     global index
 
