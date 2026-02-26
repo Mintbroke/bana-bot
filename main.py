@@ -351,7 +351,7 @@ async def rename_loop():
 
     guild = bot.get_guild(GUILD_ID)
     member = await guild.fetch_member(USER_ID)
-    username = member.name
+    username = member.nick
     name_split = username.split("-")
     days = int(name_split[1]) - 1
     new_name = name_split[0] + " " + str(days)
