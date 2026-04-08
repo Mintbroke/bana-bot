@@ -375,7 +375,7 @@ def parse_duration(duration: str) -> timedelta:
     return timedelta(seconds=amount * time_units[unit])
 
 
-@bot.tree.command(name="bana_timeout", description="Timeout a user")
+@bot.tree.command(name="bana_timeout", description="Timeout a user", guild=guild)
 @app_commands.describe(user="User to timeout", duration="Duration (e.g. 10m, 1h)")
 @app_commands.checks.has_permissions(administrator=True)
 async def bana_timeout(interaction: discord.Interaction, user: discord.Member, duration: str, reason: str):
