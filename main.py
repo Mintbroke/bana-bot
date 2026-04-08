@@ -359,6 +359,69 @@ async def rename_loop():
     if member:
         await member.edit(nick=new_name)
 
+def parse_duration(duration: str) -> timedelta:
+    time_units = {
+        "s": 1,
+        "m": 60,
+        "h": 3600,
+        "d": 86400
+    }
+
+    unit = duration[-1]
+    if unit not in time_units:
+        raise ValueError("Invalid time unit")
+
+    amount = int(duration[:-1])
+    return timedelta(seconds=amount * time_units[unit])
+
+
+@bot.tree.command(name="timeout", description="Timeout a user")
+@app_commands.describe(user="User to timeout", duration="Duration (e.g. 10m, 1h)")
+@app_commands.checks.has_permissions(administrator=True)
+async def timeout(interaction: discord.Interaction, user: discord.Member, duration: str):
+    
+    # Prevent self-timeout
+    if user == interaction.user:
+        await interaction.response.send_message("You can't timeout yourself.", ephemeral=True)
+        return
+
+    # Role hierarchy check (user vs target)
+    if user.top_role >= interaction.user.top_role:
+        await interaction.response.send_message(
+            "You can't timeout someone with equal or higher role.",
+            ephemeral=True
+        )
+        return
+
+    # Bot role hierarchy check
+    if user.top_role >= interaction.guild.me.top_role:
+        await interaction.response.send_message(
+            "I can't timeout this user (role too high).",
+            ephemeral=True
+        )
+        return
+
+    try:
+        delta = parse_duration(duration)
+    except:
+        await interaction.response.send_message(
+            "Invalid duration format. Use like `10m`, `1h`, `30s`.",
+            ephemeral=True
+        )
+        return
+
+    try:
+        await user.timeout(delta, reason=f"Timed out by {interaction.user}")
+        await interaction.response.send_message(
+            f"{user.mention} has been timed out for `{duration}`."
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "I don't have permission to timeout this user.",
+            ephemeral=True
+        )
+
+
 
 @bot.tree.command(name="gamble", description="Gamble your coins for a chance to win rare tickets", guild=guild)
 async def gamble(interaction: discord.Interaction, multiplier: int = 1):
