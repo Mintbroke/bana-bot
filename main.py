@@ -378,7 +378,7 @@ def parse_duration(duration: str) -> timedelta:
 @bot.tree.command(name="bana_timeout", description="Timeout a user")
 @app_commands.describe(user="User to timeout", duration="Duration (e.g. 10m, 1h)")
 @app_commands.checks.has_permissions(administrator=True)
-async def bana_timeout(interaction: discord.Interaction, user: discord.Member, duration: str):
+async def bana_timeout(interaction: discord.Interaction, user: discord.Member, duration: str, reason: str):
     
     # Prevent self-timeout
     if user == interaction.user:
@@ -413,7 +413,7 @@ async def bana_timeout(interaction: discord.Interaction, user: discord.Member, d
     try:
         await user.timeout(delta, reason=f"Timed out by {interaction.user}")
         await interaction.response.send_message(
-            f"{user.mention} has been timed out for `{duration}`."
+            f"{user.mention} has been timed out for `{duration}` for following reason: `{reason}`."
         )
     except discord.Forbidden:
         await interaction.response.send_message(
