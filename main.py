@@ -725,96 +725,107 @@ def _clean_pal_number(value: Any) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def _walk_json_for_pals(value: Any, output: dict[str, dict[str, Any]]) -> None:
-    """Recursively extract Pal-like records from embedded Next.js JSON."""
-    if isinstance(value, dict):
-        name = next(
-            (value.get(k) for k in ("name", "Name", "displayName", "title") if value.get(k)),
-            None,
-        )
-        number = next(
-            (_clean_pal_number(value.get(k)) for k in (
-                "number", "palNumber", "paldexNumber", "deckNumber", "key", "no"
-            ) if value.get(k) is not None),
-            None,
-        )
-        image = next(
-            (value.get(k) for k in (
-                "image", "imageUrl", "image_url", "icon", "iconUrl", "thumbnail"
-            ) if isinstance(value.get(k), str) and value.get(k)),
-            None,
-        )
+def _is_probable_pal_artwork(image: Any, pal_name: str) -> bool:
+    """Reject element/work icons and accept artwork that identifies the Pal."""
+    if image is None:
+        return False
 
-        if name and number and image:
-            image_url = normalize_image_url(image)
-            if image_url:
-                output[number] = {
-                    "key": number,
-                    "name": str(name).strip(),
-                    "image": image_url,
-                }
+    alt = str(image.get("alt") or "").strip()
+    src = str(image.get("src") or image.get("data-src") or "").strip()
+    if not src:
+        return False
 
-        for child in value.values():
-            _walk_json_for_pals(child, output)
+    normalized_alt = re.sub(r"\s+", " ", alt).strip().casefold()
+    normalized_name = re.sub(r"\s+", " ", pal_name).strip().casefold()
 
-    elif isinstance(value, list):
-        for child in value:
-            _walk_json_for_pals(child, output)
+    blocked_alts = {
+        "dark", "grass", "ground", "water", "fire", "ice", "neutral",
+        "electric", "dragon", "handiwork", "gathering", "lumbering",
+        "transporting", "planting", "medicine production", "watering",
+        "mining", "kindling", "farming", "cooling",
+        "generating electricity", "image",
+    }
+    if normalized_alt in blocked_alts:
+        return False
+
+    # Paldeck's real artwork currently uses the Pal name as its alt text.
+    if normalized_alt == normalized_name:
+        return True
+    if normalized_alt in {f"{normalized_name} image", f"image: {normalized_name}"}:
+        return True
+
+    # Conservative fallback for artwork URLs whose filename contains the name.
+    slug = re.sub(r"[^a-z0-9]+", "", normalized_name)
+    src_slug = re.sub(r"[^a-z0-9]+", "", unquote(src).casefold())
+    return bool(slug and len(slug) >= 4 and slug in src_slug)
 
 
 def _parse_paldeck_html(html: str) -> list[dict[str, Any]]:
-    """Parse Paldeck's current webpage into the bot's key/name/image shape."""
+    """
+    Parse only actual Pal detail links from Paldeck.
+
+    This deliberately ignores generic JSON objects and filter icons because
+    those previously caused work-suitability names/icons to be mistaken for
+    Pal names/artwork.
+    """
     soup = BeautifulSoup(html, "html.parser")
     found: dict[str, dict[str, Any]] = {}
 
-    # First try structured JSON embedded by Next.js or other page scripts.
-    for script in soup.find_all("script"):
-        raw = script.string or script.get_text(strip=True)
-        if not raw or raw[0] not in "[{":
-            continue
-        try:
-            _walk_json_for_pals(json.loads(raw), found)
-        except (json.JSONDecodeError, TypeError):
+    for anchor in soup.find_all("a", href=True):
+        href = str(anchor.get("href") or "").strip()
+        parsed_href = urlparse(urljoin(PALDECK_BASE_URL, href))
+        path = parsed_href.path.rstrip("/")
+
+        # Actual records are linked as /pals/<Pal Name>. Ignore /pals itself,
+        # filters, assets, and every other database route.
+        match = re.fullmatch(r"/pals/([^/]+)", path, flags=re.I)
+        if not match:
             continue
 
-    # DOM fallback: locate Pal images and read name/number from their card.
-    for image in soup.find_all("img"):
-        src = image.get("src") or image.get("data-src")
-        if not src:
+        pal_name = unquote(match.group(1)).replace("+", " ").strip()
+        pal_name = re.sub(r"\s+", " ", pal_name)
+        if not pal_name or pal_name.casefold() in {"pals", "database"}:
             continue
 
-        alt = str(image.get("alt") or "").strip()
-        parent = image.find_parent("a", href=re.compile(r"/pals?/"))
-        card = parent or image.find_parent(["article", "li", "div"])
+        # The number may be inside the anchor or its nearest card container.
+        card = anchor.find_parent(["article", "li"])
         if card is None:
+            card = anchor.find_parent("div")
+        context = card or anchor
+        text = " ".join(context.stripped_strings)
+
+        number_match = re.search(r"#\s*(\d{1,3}[A-Z]?)\b", text.upper())
+        if not number_match:
+            continue
+        number = number_match.group(1)
+
+        # Prefer an image inside the Pal link. If layout wraps the image and
+        # text in sibling links, search the nearest card but require the alt or
+        # URL to identify this exact Pal.
+        candidates = list(anchor.find_all("img"))
+        if context is not anchor:
+            candidates.extend(context.find_all("img"))
+
+        artwork = next(
+            (img for img in candidates if _is_probable_pal_artwork(img, pal_name)),
+            None,
+        )
+        if artwork is None:
             continue
 
-        text = " ".join(card.stripped_strings)
-        number = _clean_pal_number(text)
-        if not number:
+        src = artwork.get("src") or artwork.get("data-src")
+        image_url = normalize_image_url(str(src))
+        if not image_url:
             continue
 
-        name = re.sub(r"\s+Image$", "", alt, flags=re.I).strip()
-        if not name or name.lower() in {"image", "pal image", "paldeck logo"}:
-            heading = card.find(["h1", "h2", "h3", "h4", "strong"])
-            name = heading.get_text(" ", strip=True) if heading else ""
-
-        name = re.sub(r"#\s*\d{1,3}[A-Z]?", "", name).strip()
-        if not name:
-            # Typical card text ends with "Name #12B".
-            match = re.search(r"([A-Za-z][A-Za-z '\-.]+?)\s*#\s*\d{1,3}[A-Z]?", text)
-            name = match.group(1).strip() if match else ""
-
-        image_url = normalize_image_url(src)
-        if name and image_url:
-            found[number] = {
-                "key": number,
-                "name": name,
-                "image": image_url,
-            }
+        found[number] = {
+            "key": number,
+            "name": pal_name,
+            "image": image_url,
+        }
 
     def sort_key(pal: dict[str, Any]) -> tuple[int, str]:
-        match = re.match(r"(\d+)([A-Z]?)", pal["key"])
+        match = re.fullmatch(r"(\d+)([A-Z]?)", pal["key"])
         return (int(match.group(1)), match.group(2)) if match else (9999, pal["key"])
 
     return sorted(found.values(), key=sort_key)
@@ -2043,10 +2054,7 @@ async def pal_card(interaction: discord.Interaction) -> None:
 # Interactive seven-card Pal deck (not stored in the database)
 # ---------------------------------------------------------------------------
 PAL_PACK_COVER_URL = (
-    "https://cdn.discordapp.com/attachments/928447198746804265/"
-    "1534757274117996645/dawnofpalpagosboosterpack.png"
-    "?ex=6a754998&is=6a73f818&"
-    "hm=bc75ac921c9876bb095e6b78480050c83a314a75c86a4d6ab31d4fba1c3a76ad&"
+    "https://cdn11.bigcommerce.com/s-ua4dd/images/stencil/original/products/346692/543461/Gamenerdzimagez1124__53572.1782768733.png"
 )
 
 PAL_PACK_SIZE = 7
@@ -2120,15 +2128,13 @@ class PalDeckView(discord.ui.View):
         embed.set_image(url=PAL_PACK_COVER_URL)
         return embed
 
-    def _all_card_files(self) -> list[discord.File]:
-        """Create the seven attachments used for the whole browsing session."""
-        return [
-            discord.File(
-                BytesIO(card["png"]),
-                filename=card["filename"],
-            )
-            for card in self.cards
-        ]
+    def _current_card_file(self) -> discord.File:
+        """Upload only the visible card so unrevealed cards are never spoiled."""
+        card = self.cards[self.current_index]
+        return discord.File(
+            BytesIO(card["png"]),
+            filename=card["filename"],
+        )
 
     def _card_embed(self) -> discord.Embed:
         """Build the current card embed without regenerating or uploading it."""
@@ -2170,11 +2176,11 @@ class PalDeckView(discord.ui.View):
         self.current_index = 0
         self._sync_buttons()
 
-        # Upload all seven rendered cards once. Later navigation edits only the
-        # embed and buttons, so no image download, Pillow render, or re-upload.
+        # Upload only card 1. The remaining six stay in memory and cannot be
+        # opened from Discord's attachment strip before they are revealed.
         await interaction.response.edit_message(
             embed=self._card_embed(),
-            attachments=self._all_card_files(),
+            attachments=[self._current_card_file()],
             view=self,
         )
 
@@ -2192,10 +2198,10 @@ class PalDeckView(discord.ui.View):
             self.current_index -= 1
         self._sync_buttons()
 
-        # The card images are already attached to the message. This edit only
-        # changes the attachment:// URL used by the embed.
+        # PNG rendering is cached, but only the selected image is uploaded.
         await interaction.response.edit_message(
             embed=self._card_embed(),
+            attachments=[self._current_card_file()],
             view=self,
         )
 
@@ -2215,6 +2221,7 @@ class PalDeckView(discord.ui.View):
 
         await interaction.response.edit_message(
             embed=self._card_embed(),
+            attachments=[self._current_card_file()],
             view=self,
         )
 
