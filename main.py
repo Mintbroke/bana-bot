@@ -773,7 +773,21 @@ async def random_pal(interaction: discord.Interaction):
                 text="MYTHICAL DRAW 🌌 • A legendary collector's prize"
             )
 
-        await interaction.followup.send(embed=embed)
+        announcement = None
+
+        if tier_name == "Alpha":
+            announcement = "🔴 **ALPHA PAL ENCOUNTER!**"
+
+        elif tier_name == "Lucky":
+            announcement = "✨ **A LUCKY PAL HAS APPEARED!** ✨"
+
+        elif tier_name == "Mythical":
+            announcement = "🌌 **MYTHICAL PULL! INCREDIBLE LUCK!** 🌌"
+
+        await interaction.followup.send(
+            content=announcement,
+            embed=embed
+        )
 
     except aiohttp.ClientResponseError as error:
         log.exception("Paldeck HTTP error: %s", error)
@@ -790,21 +804,9 @@ async def random_pal(interaction: discord.Interaction):
     ) as error:
         log.exception("Failed to draw a random Pal: %s", error)
 
-    announcement = None
-
-    if tier_name == "Alpha":
-        announcement = "🔴 **ALPHA PAL ENCOUNTER!**"
-
-    elif tier_name == "Lucky":
-        announcement = "✨ **A LUCKY PAL HAS APPEARED!** ✨"
-
-    elif tier_name == "Mythical":
-        announcement = "🌌 **MYTHICAL PULL! INCREDIBLE LUCK!** 🌌"
-
-    await interaction.followup.send(
-        content=announcement,
-        embed=embed
-    )
+        await interaction.followup.send(
+            "An error occurred while drawing a Pal."
+        )
 
 @bot.command()
 async def dbtest(ctx):
