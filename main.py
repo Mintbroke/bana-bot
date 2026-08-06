@@ -2102,10 +2102,7 @@ async def pal_card(interaction: discord.Interaction) -> None:
 # Interactive seven-card Pal deck (not stored in the database)
 # ---------------------------------------------------------------------------
 PAL_PACK_COVER_URL = (
-    "https://cdn.discordapp.com/attachments/928447198746804265/"
-    "1534757274117996645/dawnofpalpagosboosterpack.png"
-    "?ex=6a754998&is=6a73f818&"
-    "hm=bc75ac921c9876bb095e6b78480050c83a314a75c86a4d6ab31d4fba1c3a76ad&"
+    "https://cdn11.bigcommerce.com/s-ua4dd/images/stencil/original/products/346692/543461/Gamenerdzimagez1124__53572.1782768733.png"
 )
 
 PAL_PACK_SIZE = 7
