@@ -585,9 +585,9 @@ async def cats(interaction: discord.Interaction):
 async def test(interaction: discord.Interaction):
     await interaction.response.send_message("Hello World!")
 
-PAL_DATA_URL = "https://mobalytics.gg/gamebase/guides/palworld-all-pals"
-PAL_DATA_BASE_URL = "https://mobalytics.gg"
-MIN_EXPECTED_PAL_RECORDS = 250
+PAL_DATA_URL = "https://palworldpals.com/pals"
+PAL_DATA_BASE_URL = "https://palworldpals.com"
+MIN_EXPECTED_PAL_RECORDS = 280
 MIN_EXPECTED_MAX_BASE_NUMBER = 200
 _PALS_CACHE: Optional[list[dict[str, Any]]] = None
 
@@ -733,52 +733,80 @@ def _extract_best_img_src(image: Any) -> str:
     return ""
 
 
-def _parse_mobalytics_pal_html(html: str) -> list[dict[str, Any]]:
-    """Parse the complete static Palpedia table (including 1.0 Pals)."""
+def _parse_palworldpals_html(html: str) -> list[dict[str, Any]]:
+    """Parse PalworldPals' complete static v1.0.1 Paldeck page."""
     soup = BeautifulSoup(html, "html.parser")
     found: dict[tuple[str, str], dict[str, Any]] = {}
 
-    blocked_names = {
-        "theme", "mobalytics", "palworld", "image", "download app",
-    }
+    # Each real Pal links to a detail page below /pals/<slug>. Using the
+    # detail-link boundary prevents work icons, filters, and navigation labels
+    # from being mistaken for Pal records.
+    for link in soup.find_all("a", href=True):
+        href = str(link.get("href") or "").strip()
+        parsed_href = urlparse(urljoin(PAL_DATA_BASE_URL, href))
+        path = parsed_href.path.rstrip("/")
 
-    for image in soup.find_all("img"):
-        pal_name = re.sub(r"\s+", " ", str(image.get("alt") or "")).strip()
-        if not pal_name or pal_name.casefold() in blocked_names:
+        if not path.startswith("/pals/") or path == "/pals":
             continue
 
-        # Find the smallest nearby container containing '#<number> <Pal name>'.
-        container = image
-        number: Optional[str] = None
-        for _ in range(8):
-            container = getattr(container, "parent", None)
-            if container is None:
-                break
-            local_text = " ".join(container.stripped_strings)
-            escaped_name = re.escape(pal_name)
-            match = re.search(
-                rf"#\s*(\d{{1,3}}[A-Z]?)\s+{escaped_name}(?:\b|$)",
-                local_text,
-                flags=re.I,
-            )
-            if match:
-                number = match.group(1).upper()
-                break
-
-        if not number:
+        local_text = " ".join(link.stripped_strings)
+        if not local_text:
             continue
 
-        image_src = _extract_best_img_src(image)
+        # Typical card text is "Lamball #1 Neutral" or "Fuack Ignis #5B ...".
+        number_match = re.search(r"#\s*(\d{1,3}[A-Za-z]?)\b", local_text)
+        if not number_match:
+            # Some layouts place the number in the immediate parent.
+            parent_text = " ".join(link.parent.stripped_strings) if link.parent else ""
+            number_match = re.search(r"#\s*(\d{1,3}[A-Za-z]?)\b", parent_text)
+            local_text = parent_text or local_text
+        if not number_match:
+            continue
+
+        number = number_match.group(1).upper()
+        prefix = local_text[: number_match.start()].strip(" -–—|\n\t")
+
+        image = link.find("img")
+        if image is None and link.parent is not None:
+            image = link.parent.find("img")
+
+        alt_name = ""
+        if image is not None:
+            alt_name = re.sub(r"\s+", " ", str(image.get("alt") or "")).strip()
+            alt_name = re.sub(r"\s+(?:pal|image|icon|menu artwork)$", "", alt_name, flags=re.I)
+
+        # Prefer the visible name before #number; use image alt as fallback.
+        pal_name = re.sub(r"\s+", " ", prefix).strip()
+        if not pal_name or len(pal_name) > 60:
+            pal_name = alt_name
+
+        # Strip common site/card prefixes if present.
+        pal_name = re.sub(r"^(?:view|open|pal)\s+", "", pal_name, flags=re.I).strip()
+        if not pal_name or pal_name.casefold() in {
+            "pals", "all pals", "paldeck", "filter", "search"
+        }:
+            continue
+
+        image_src = _extract_best_img_src(image) if image is not None else ""
         image_url = normalize_image_url(image_src)
         if not image_url:
             continue
 
+        # Reject obvious UI/work/element icons.
+        combined_image_text = f"{image_src} {alt_name}".casefold()
+        if any(token in combined_image_text for token in (
+            "work-suitability", "work_suitability", "element-icon",
+            "/icons/", "filter", "logo", "favicon"
+        )):
+            continue
+
+        detail_url = urljoin(PAL_DATA_BASE_URL, href)
         key = (number, pal_name.casefold())
         found[key] = {
             "key": number,
             "name": pal_name,
             "image": image_url,
-            "detail_url": PAL_DATA_URL,
+            "detail_url": detail_url,
         }
 
     pals = list(found.values())
@@ -798,7 +826,7 @@ def _parse_mobalytics_pal_html(html: str) -> list[dict[str, Any]]:
         or highest_base_number < MIN_EXPECTED_MAX_BASE_NUMBER
     ):
         raise ValueError(
-            "Incomplete Palpedia parse: "
+            "Incomplete PalworldPals parse: "
             f"records={len(pals)}, names={len(unique_names)}, "
             f"numbers={len(unique_numbers)}, max={highest_base_number}"
         )
@@ -813,7 +841,7 @@ def _parse_mobalytics_pal_html(html: str) -> list[dict[str, Any]]:
 
 
 async def fetch_pals(*, force_refresh: bool = False) -> list[dict[str, Any]]:
-    """Load and cache the complete current Palpedia roster."""
+    """Load and cache the complete current PalworldPals roster."""
     global _PALS_CACHE
 
     if _PALS_CACHE is not None and not force_refresh:
@@ -821,8 +849,14 @@ async def fetch_pals(*, force_refresh: bool = False) -> list[dict[str, Any]]:
 
     timeout = aiohttp.ClientTimeout(total=45)
     headers = {
-        "User-Agent": "Mozilla/5.0 PalworldDiscordBot/1.0",
-        "Accept": "text/html,application/xhtml+xml",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
     }
 
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -830,14 +864,14 @@ async def fetch_pals(*, force_refresh: bool = False) -> list[dict[str, Any]]:
             response.raise_for_status()
             html = await response.text()
 
-    pals = _parse_mobalytics_pal_html(html)
+    pals = _parse_palworldpals_html(html)
     highest = max(
         int(match.group(1))
         for pal in pals
         if (match := re.fullmatch(r"(\d+)([A-Z]?)", pal["key"]))
     )
     log.info(
-        "Loaded complete Pal roster: %s records; highest base number #%s",
+        "Loaded complete PalworldPals roster: %s records; highest base number #%s",
         len(pals),
         highest,
     )
