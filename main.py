@@ -83,16 +83,33 @@ def _ensure_schema():
                         test_trait2 TEXT,
                         test_trait3 TEXT,
                         test_trait4 TEXT,
+                        is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
                         obtained_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
+                """)
+                cur.execute("""
+                    ALTER TABLE test_owned_pals
+                    ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN NOT NULL DEFAULT FALSE;
                 """)
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_test_owned_pals_user
                     ON test_owned_pals (
                         guild_id,
                         user_id,
+                        is_favorite DESC,
                         obtained_at DESC,
                         id DESC
+                    );
+                """)
+
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS test_pal_daily_rolls (
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        roll_date DATE NOT NULL,
+                        roll_count INTEGER NOT NULL DEFAULT 0
+                            CHECK (roll_count >= 0 AND roll_count <= 5),
+                        PRIMARY KEY (guild_id, user_id, roll_date)
                     );
                 """)
                 log.info("Ensured schema")
@@ -736,6 +753,82 @@ async def fetch_pals() -> list[dict[str, Any]]:
     return valid_pals
 
 
+PAL_DAILY_ROLL_LIMIT = 5
+
+
+def reserve_daily_pal_roll(*, guild_id: int, user_id: int) -> Optional[int]:
+    """Atomically reserve one UTC-day roll and return the new count."""
+    conn = get_db_connection()
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO test_pal_daily_rolls (
+                        guild_id,
+                        user_id,
+                        roll_date,
+                        roll_count
+                    )
+                    VALUES (
+                        %s,
+                        %s,
+                        (NOW() AT TIME ZONE 'UTC')::date,
+                        1
+                    )
+                    ON CONFLICT (guild_id, user_id, roll_date)
+                    DO UPDATE SET
+                        roll_count = test_pal_daily_rolls.roll_count + 1
+                    WHERE test_pal_daily_rolls.roll_count < %s
+                    RETURNING roll_count;
+                    """,
+                    (guild_id, user_id, PAL_DAILY_ROLL_LIMIT),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row is not None else None
+    finally:
+        conn.close()
+
+
+def release_daily_pal_roll(*, guild_id: int, user_id: int) -> None:
+    """Return a reserved roll when the draw fails before the Pal is saved."""
+    conn = get_db_connection()
+
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE test_pal_daily_rolls
+                    SET roll_count = GREATEST(roll_count - 1, 0)
+                    WHERE guild_id = %s
+                      AND user_id = %s
+                      AND roll_date = (NOW() AT TIME ZONE 'UTC')::date;
+                    """,
+                    (guild_id, user_id),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM test_pal_daily_rolls
+                    WHERE guild_id = %s
+                      AND user_id = %s
+                      AND roll_date = (NOW() AT TIME ZONE 'UTC')::date
+                      AND roll_count = 0;
+                    """,
+                    (guild_id, user_id),
+                )
+    finally:
+        conn.close()
+
+
+def get_next_utc_reset_timestamp() -> int:
+    now = datetime.now(timezone.utc)
+    tomorrow = (now + timedelta(days=1)).date()
+    reset = datetime.combine(tomorrow, datetime.min.time(), tzinfo=timezone.utc)
+    return int(reset.timestamp())
+
+
 def save_test_owned_pal(
     *,
     guild_id: int,
@@ -840,11 +933,12 @@ def get_test_owned_pals(
                     test_trait2,
                     test_trait3,
                     test_trait4,
+                    is_favorite,
                     obtained_at
                 FROM test_owned_pals
                 WHERE guild_id = %s
                   AND user_id = %s
-                ORDER BY obtained_at DESC, id DESC;
+                ORDER BY is_favorite DESC, obtained_at DESC, id DESC;
                 """,
                 (guild_id, user_id),
             )
@@ -869,7 +963,8 @@ def get_test_owned_pals(
                     "test_trait2": row[10],
                     "test_trait3": row[11],
                     "test_trait4": row[12],
-                    "obtained_at": row[13],
+                    "is_favorite": bool(row[13]),
+                    "obtained_at": row[14],
                 }
             )
 
@@ -997,90 +1092,112 @@ def create_draw_embed(
     return embed
 
 
-def create_inventory_summary_embed(
+def set_test_owned_pal_favorite(
+    *,
+    guild_id: int,
+    user_id: int,
+    owned_pal_id: int,
+    is_favorite: bool,
+) -> bool:
+    """Favorite/unfavorite one Pal only when it belongs to the user."""
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE test_owned_pals
+                    SET is_favorite = %s
+                    WHERE id = %s
+                      AND guild_id = %s
+                      AND user_id = %s
+                    RETURNING id;
+                    """,
+                    (is_favorite, owned_pal_id, guild_id, user_id),
+                )
+                return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def favorite_marker(pal: dict[str, Any]) -> str:
+    return "⭐ " if pal.get("is_favorite") else ""
+
+
+def create_inventory_page_embed(
     *,
     pals: list[dict[str, Any]],
-    current_index: int,
+    page: int,
     owner: discord.Member | discord.User,
+    per_page: int = 5,
 ) -> discord.Embed:
-    pal = pals[current_index]
-    tier_name = pal["tier_name"]
-    tier = get_tier_config(tier_name)
-    display_name = get_pal_display_name(
-        pal["pal_name"],
-        tier_name,
-    )
+    total_pages = max(1, (len(pals) + per_page - 1) // per_page)
+    start = page * per_page
+    page_pals = pals[start:start + per_page]
 
     embed = discord.Embed(
-        title=f"{tier['emoji']} {display_name}",
+        title="Pal Inventory",
         description=(
-            f"**Paldeck:** `#{pal['pal_number']}`\n"
-            f"**Rarity:** {tier_name}\n"
-            f"**Owned Pal ID:** `{pal['id']}`\n\n"
-            "Press **View Info** to inspect this Pal."
+            "⭐ Favorites are shown first. Press a numbered button to view "
+            "that Pal's full information."
         ),
-        color=tier["color"],
+        color=discord.Color.blurple(),
     )
-
-    embed.set_thumbnail(url=pal["image_url"])
-
     embed.set_author(
         name=f"{owner.display_name}'s Pal Collection",
         icon_url=owner.display_avatar.url,
     )
 
-    embed.set_footer(
-        text=f"Pal {current_index + 1} of {len(pals)}"
-    )
+    for slot, pal in enumerate(page_pals, start=1):
+        tier = get_tier_config(pal["tier_name"])
+        display_name = get_pal_display_name(pal["pal_name"], pal["tier_name"])
+        embed.add_field(
+            name=f"{slot}. {favorite_marker(pal)}{tier['emoji']} {display_name}",
+            value=(
+                f"Paldeck `#{pal['pal_number']}` • **{pal['tier_name']}**\n"
+                f"Owned ID: `{pal['id']}`"
+            ),
+            inline=False,
+        )
 
+    embed.set_footer(
+        text=f"Page {page + 1} of {total_pages} • {len(pals)} total Pals"
+    )
     return embed
 
 
 def create_inventory_detail_embed(
     *,
     pal: dict[str, Any],
-    current_index: int,
-    total_pals: int,
     owner: discord.Member | discord.User,
+    position: int,
+    total_pals: int,
 ) -> discord.Embed:
     tier_name = pal["tier_name"]
     tier = get_tier_config(tier_name)
-    display_name = get_pal_display_name(
-        pal["pal_name"],
-        tier_name,
-    )
+    display_name = get_pal_display_name(pal["pal_name"], tier_name)
+    favorite_text = "⭐ Favorite" if pal.get("is_favorite") else "Not favorited"
 
     embed = discord.Embed(
-        title=(
-            f"{tier['emoji']} {display_name} "
-            f"{tier['emoji']}"
-        ),
+        title=f"{favorite_marker(pal)}{tier['emoji']} {display_name} {tier['emoji']}",
         description=(
             f"**Paldeck Number:** `#{pal['pal_number']}`\n"
-            f"**Owned Pal ID:** `{pal['id']}`"
+            f"**Owned Pal ID:** `{pal['id']}`\n"
+            f"**Favorite:** {favorite_text}"
         ),
         color=tier["color"],
     )
-
     embed.set_image(url=pal["image_url"])
-
     embed.set_author(
         name=f"Owned by {owner.display_name}",
         icon_url=owner.display_avatar.url,
     )
-
     embed.add_field(
         name="Rarity",
         value=f"{tier['emoji']} **{tier_name}**",
         inline=True,
     )
-
-    embed.add_field(
-        name="Size",
-        value=pal["pal_size"],
-        inline=True,
-    )
-
+    embed.add_field(name="Size", value=pal["pal_size"], inline=True)
     embed.add_field(
         name="Stat Multipliers",
         value=(
@@ -1090,152 +1207,218 @@ def create_inventory_detail_embed(
         ),
         inline=False,
     )
-
     trait_lines = get_trait_lines(pal)
-
     embed.add_field(
         name="Traits",
         value="\n".join(trait_lines) if trait_lines else "No test traits",
         inline=False,
     )
-
-    obtained_at = pal.get("obtained_at")
-
-    if obtained_at is not None:
+    if pal.get("obtained_at") is not None:
         embed.add_field(
             name="Obtained",
-            value=discord.utils.format_dt(
-                obtained_at,
-                style="F",
-            ),
+            value=discord.utils.format_dt(pal["obtained_at"], style="F"),
             inline=False,
         )
-
-    embed.set_footer(
-        text=f"Pal {current_index + 1} of {total_pals}"
-    )
-
+    embed.set_footer(text=f"Pal {position + 1} of {total_pals}")
     return embed
 
 
+class PullFavoriteView(discord.ui.View):
+    """Favorite a newly pulled Pal directly from its result message."""
+    def __init__(self, *, guild_id: int, owner_id: int, owned_pal_id: int):
+        super().__init__(timeout=180)
+        self.guild_id = guild_id
+        self.owner_id = owner_id
+        self.owned_pal_id = owned_pal_id
+        self.is_favorite = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "Only the user who pulled this Pal can favorite it.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Favorite", emoji="☆", style=discord.ButtonStyle.secondary)
+    async def favorite_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.is_favorite = not self.is_favorite
+        changed = set_test_owned_pal_favorite(
+            guild_id=self.guild_id,
+            user_id=self.owner_id,
+            owned_pal_id=self.owned_pal_id,
+            is_favorite=self.is_favorite,
+        )
+        if not changed:
+            await interaction.response.send_message(
+                "That Pal could not be found in your collection.", ephemeral=True
+            )
+            return
+        button.label = "Favorited" if self.is_favorite else "Favorite"
+        button.emoji = "⭐" if self.is_favorite else "☆"
+        button.style = (
+            discord.ButtonStyle.success
+            if self.is_favorite
+            else discord.ButtonStyle.secondary
+        )
+        await interaction.response.edit_message(view=self)
+
+
 class PalInventoryView(discord.ui.View):
+    PER_PAGE = 5
+
     def __init__(
         self,
         *,
         owner_id: int,
         owner: discord.Member | discord.User,
         pals: list[dict[str, Any]],
+        guild_id: int,
     ):
         super().__init__(timeout=180)
-
         self.owner_id = owner_id
         self.owner = owner
+        self.guild_id = guild_id
         self.pals = pals
-        self.current_index = 0
-        self.showing_details = False
-
+        self.page = 0
+        self.selected_index: Optional[int] = None
         self.update_buttons()
 
-    async def interaction_check(
-        self,
-        interaction: discord.Interaction,
-    ) -> bool:
+    @property
+    def total_pages(self) -> int:
+        return max(1, (len(self.pals) + self.PER_PAGE - 1) // self.PER_PAGE)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                "This is not your Pal collection.",
-                ephemeral=True,
+                "This is not your Pal collection.", ephemeral=True
             )
             return False
-
         return True
 
-    def update_buttons(self) -> None:
-        self.previous_button.disabled = self.current_index == 0
-        self.next_button.disabled = (
-            self.current_index >= len(self.pals) - 1
-        )
+    def page_pals(self) -> list[dict[str, Any]]:
+        start = self.page * self.PER_PAGE
+        return self.pals[start:start + self.PER_PAGE]
 
-        if self.showing_details:
-            self.info_button.label = "Back"
-            self.info_button.emoji = "↩️"
-        else:
-            self.info_button.label = "View Info"
-            self.info_button.emoji = "🔍"
+    def update_buttons(self) -> None:
+        page_count = len(self.page_pals())
+        slot_buttons = [self.slot1, self.slot2, self.slot3, self.slot4, self.slot5]
+        for index, button in enumerate(slot_buttons):
+            button.disabled = self.selected_index is not None or index >= page_count
+            button.label = str(index + 1)
+
+        self.previous_page.disabled = self.selected_index is not None or self.page == 0
+        self.next_page.disabled = (
+            self.selected_index is not None or self.page >= self.total_pages - 1
+        )
+        self.back_button.disabled = self.selected_index is None
+        self.favorite_button.disabled = self.selected_index is None
+
+        if self.selected_index is not None:
+            pal = self.pals[self.selected_index]
+            self.favorite_button.label = (
+                "Unfavorite" if pal.get("is_favorite") else "Favorite"
+            )
+            self.favorite_button.emoji = "⭐" if pal.get("is_favorite") else "☆"
 
     def create_current_embed(self) -> discord.Embed:
-        if self.showing_details:
+        if self.selected_index is not None:
             return create_inventory_detail_embed(
-                pal=self.pals[self.current_index],
-                current_index=self.current_index,
-                total_pals=len(self.pals),
+                pal=self.pals[self.selected_index],
                 owner=self.owner,
+                position=self.selected_index,
+                total_pals=len(self.pals),
             )
-
-        return create_inventory_summary_embed(
+        return create_inventory_page_embed(
             pals=self.pals,
-            current_index=self.current_index,
+            page=self.page,
             owner=self.owner,
+            per_page=self.PER_PAGE,
         )
 
-    @discord.ui.button(
-        label="Previous",
-        emoji="⬅️",
-        style=discord.ButtonStyle.secondary,
-    )
-    async def previous_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        if self.current_index > 0:
-            self.current_index -= 1
-
-        self.showing_details = False
+    async def select_slot(self, interaction: discord.Interaction, slot: int) -> None:
+        index = self.page * self.PER_PAGE + slot
+        if index >= len(self.pals):
+            await interaction.response.send_message("No Pal is in that slot.", ephemeral=True)
+            return
+        self.selected_index = index
         self.update_buttons()
+        await interaction.response.edit_message(embed=self.create_current_embed(), view=self)
 
-        await interaction.response.edit_message(
-            embed=self.create_current_embed(),
-            view=self,
-        )
+    @discord.ui.button(label="1", style=discord.ButtonStyle.primary, row=0)
+    async def slot1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.select_slot(interaction, 0)
 
-    @discord.ui.button(
-        label="View Info",
-        emoji="🔍",
-        style=discord.ButtonStyle.primary,
-    )
-    async def info_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        self.showing_details = not self.showing_details
+    @discord.ui.button(label="2", style=discord.ButtonStyle.primary, row=0)
+    async def slot2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.select_slot(interaction, 1)
+
+    @discord.ui.button(label="3", style=discord.ButtonStyle.primary, row=0)
+    async def slot3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.select_slot(interaction, 2)
+
+    @discord.ui.button(label="4", style=discord.ButtonStyle.primary, row=0)
+    async def slot4(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.select_slot(interaction, 3)
+
+    @discord.ui.button(label="5", style=discord.ButtonStyle.primary, row=0)
+    async def slot5(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.select_slot(interaction, 4)
+
+    @discord.ui.button(label="Previous", emoji="⬅️", style=discord.ButtonStyle.secondary, row=1)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
         self.update_buttons()
+        await interaction.response.edit_message(embed=self.create_current_embed(), view=self)
 
-        await interaction.response.edit_message(
-            embed=self.create_current_embed(),
-            view=self,
-        )
-
-    @discord.ui.button(
-        label="Next",
-        emoji="➡️",
-        style=discord.ButtonStyle.secondary,
-    )
-    async def next_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        if self.current_index < len(self.pals) - 1:
-            self.current_index += 1
-
-        self.showing_details = False
+    @discord.ui.button(label="Back", emoji="↩️", style=discord.ButtonStyle.secondary, row=1)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.selected_index = None
         self.update_buttons()
+        await interaction.response.edit_message(embed=self.create_current_embed(), view=self)
 
-        await interaction.response.edit_message(
-            embed=self.create_current_embed(),
-            view=self,
+    @discord.ui.button(label="Favorite", emoji="☆", style=discord.ButtonStyle.success, row=1)
+    async def favorite_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selected_index is None:
+            return
+        pal = self.pals[self.selected_index]
+        new_value = not bool(pal.get("is_favorite"))
+        changed = set_test_owned_pal_favorite(
+            guild_id=self.guild_id,
+            user_id=self.owner_id,
+            owned_pal_id=pal["id"],
+            is_favorite=new_value,
         )
+        if not changed:
+            await interaction.response.send_message("Pal not found.", ephemeral=True)
+            return
+        pal["is_favorite"] = new_value
+        # Re-sort favorites first, then newest first, and keep selected Pal open.
+        selected_id = pal["id"]
+        self.pals.sort(
+            key=lambda item: (
+                not bool(item.get("is_favorite")),
+                -(item["obtained_at"].timestamp() if item.get("obtained_at") else 0),
+                -item["id"],
+            )
+        )
+        self.selected_index = next(
+            i for i, item in enumerate(self.pals) if item["id"] == selected_id
+        )
+        self.page = self.selected_index // self.PER_PAGE
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.create_current_embed(), view=self)
+
+    @discord.ui.button(label="Next", emoji="➡️", style=discord.ButtonStyle.secondary, row=1)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.create_current_embed(), view=self)
 
     async def on_timeout(self) -> None:
         for item in self.children:
@@ -1247,13 +1430,45 @@ class PalInventoryView(discord.ui.View):
 
 @bot.tree.command(
     name="random_pal",
-    description="Draw and store a random Pal",
+    description="Draw and store a random Pal (5 rolls per UTC day)",
     guild=guild,
 )
 async def random_pal(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
 
+    if interaction.guild_id is None:
+        await interaction.followup.send(
+            "This command can only be used in a server.",
+            ephemeral=True,
+        )
+        return
+
+    guild_id = interaction.guild_id
+    user_id = interaction.user.id
+    reserved_roll = False
+    pal_saved = False
+
     try:
+        roll_count = reserve_daily_pal_roll(
+            guild_id=guild_id,
+            user_id=user_id,
+        )
+
+        if roll_count is None:
+            reset_timestamp = get_next_utc_reset_timestamp()
+            await interaction.followup.send(
+                (
+                    f"You have used all **{PAL_DAILY_ROLL_LIMIT}** Pal rolls "
+                    f"for today. Your rolls reset <t:{reset_timestamp}:R> "
+                    f"at <t:{reset_timestamp}:F>."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        reserved_roll = True
+        rolls_remaining = PAL_DAILY_ROLL_LIMIT - roll_count
+
         pals = await fetch_pals()
         pal = random.choice(pals)
 
@@ -1264,16 +1479,9 @@ async def random_pal(interaction: discord.Interaction) -> None:
         tier_name, tier = roll_pal_tier()
         traits = generate_test_traits(tier_name)
 
-        if interaction.guild_id is None:
-            await interaction.followup.send(
-                "This command can only be used in a server.",
-                ephemeral=True,
-            )
-            return
-
         owned_pal_id = save_test_owned_pal(
-            guild_id=interaction.guild_id,
-            user_id=interaction.user.id,
+            guild_id=guild_id,
+            user_id=user_id,
             pal_number=pal_number,
             pal_name=pal_name,
             image_url=image_url,
@@ -1284,6 +1492,7 @@ async def random_pal(interaction: discord.Interaction) -> None:
             pal_size=str(tier["size"]),
             traits=traits,
         )
+        pal_saved = True
 
         embed = create_draw_embed(
             pal_number=pal_number,
@@ -1293,6 +1502,12 @@ async def random_pal(interaction: discord.Interaction) -> None:
             tier=tier,
             traits=traits,
             owned_pal_id=owned_pal_id,
+        )
+        embed.set_footer(
+            text=(
+                f"Owned Pal ID: {owned_pal_id} • Added to your collection • "
+                f"{rolls_remaining}/{PAL_DAILY_ROLL_LIMIT} rolls remaining today"
+            )
         )
 
         announcement: Optional[str] = None
@@ -1304,9 +1519,15 @@ async def random_pal(interaction: discord.Interaction) -> None:
         elif tier_name == "Mythical":
             announcement = "🌌 **MYTHICAL PULL! INCREDIBLE LUCK!** 🌌"
 
+        pull_view = PullFavoriteView(
+            guild_id=guild_id,
+            owner_id=user_id,
+            owned_pal_id=owned_pal_id,
+        )
         await interaction.followup.send(
             content=announcement,
             embed=embed,
+            view=pull_view,
         )
 
     except aiohttp.ClientResponseError as error:
@@ -1319,7 +1540,7 @@ async def random_pal(interaction: discord.Interaction) -> None:
     except (aiohttp.ClientError, KeyError, ValueError, TypeError) as error:
         log.exception("Failed to draw random Pal: %s", error)
         await interaction.followup.send(
-            "An error occurred while drawing a Pal.",
+            "An error occurred while drawing a Pal. Your roll was returned.",
             ephemeral=True,
         )
 
@@ -1329,6 +1550,19 @@ async def random_pal(interaction: discord.Interaction) -> None:
             "An unexpected error occurred while saving the Pal.",
             ephemeral=True,
         )
+
+    finally:
+        if reserved_roll and not pal_saved:
+            try:
+                release_daily_pal_roll(
+                    guild_id=guild_id,
+                    user_id=user_id,
+                )
+            except Exception:
+                log.exception(
+                    "Failed to return reserved Pal roll for user %s",
+                    user_id,
+                )
 
 
 @bot.tree.command(
@@ -1368,6 +1602,7 @@ async def inventory(interaction: discord.Interaction) -> None:
             owner_id=interaction.user.id,
             owner=interaction.user,
             pals=pals,
+            guild_id=interaction.guild_id,
         )
 
         await interaction.followup.send(
