@@ -1960,6 +1960,311 @@ async def pal_card(interaction: discord.Interaction) -> None:
             ephemeral=True,
         )
 
+
+# ---------------------------------------------------------------------------
+# Interactive five-card Pal deck preview (not stored in the database)
+# ---------------------------------------------------------------------------
+def roll_guaranteed_two_star_tier() -> tuple[str, dict[str, Any]]:
+    """Roll a tier of Uncommon (2 stars) or better."""
+    eligible_names = [
+        name for name, config in PAL_TIERS.items()
+        if len(str(config.get("stars", ""))) >= 2
+    ]
+    eligible_weights = [PAL_TIERS[name]["weight"] for name in eligible_names]
+    tier_name = random.choices(
+        eligible_names,
+        weights=eligible_weights,
+        k=1,
+    )[0]
+    return tier_name, PAL_TIERS[tier_name]
+
+
+def build_pal_pack_cover_png(
+    preview_images: list[bytes],
+    *,
+    owner_name: str,
+) -> BytesIO:
+    """Create a sealed Pal deck cover using a few pulled Pal images."""
+    width, height = 900, 1200
+    card = Image.new("RGBA", (width, height), (14, 28, 44, 255))
+    draw = ImageDraw.Draw(card)
+
+    # Foil-like layered border.
+    draw.rounded_rectangle((18, 18, 882, 1182), radius=52, fill=(46, 159, 184, 255))
+    draw.rounded_rectangle((31, 31, 869, 1169), radius=44, fill=(11, 25, 43, 255))
+    draw.rounded_rectangle((48, 48, 852, 1152), radius=36, fill=(19, 48, 68, 255))
+
+    # Decorative diagonal bands.
+    for offset in range(-500, 1200, 105):
+        draw.line((offset, 1120, offset + 700, 80), fill=(55, 158, 183, 65), width=26)
+
+    # Dimmed Pal artwork collage.
+    positions = [(55, 300), (315, 260), (560, 320)]
+    sizes = [(330, 420), (340, 470), (300, 400)]
+    for raw, position, size in zip(preview_images[:3], positions, sizes):
+        try:
+            image = Image.open(BytesIO(raw)).convert("RGBA")
+            image.thumbnail(size, Image.Resampling.LANCZOS)
+            alpha = image.getchannel("A").point(lambda value: int(value * 0.46))
+            image.putalpha(alpha)
+            card.alpha_composite(image, position)
+        except Exception:
+            continue
+
+    draw = ImageDraw.Draw(card)
+    title_font = _load_card_font(78, bold=True)
+    subtitle_font = _load_card_font(35, bold=True)
+    body_font = _load_card_font(27)
+    small_font = _load_card_font(22)
+
+    title = "PAL DECK"
+    title_box = draw.textbbox((0, 0), title, font=title_font)
+    draw.text(((width - (title_box[2] - title_box[0])) / 2, 105), title, font=title_font, fill="white")
+
+    subtitle = "FRIEND PACK"
+    subtitle_box = draw.textbbox((0, 0), subtitle, font=subtitle_font)
+    draw.text(((width - (subtitle_box[2] - subtitle_box[0])) / 2, 205), subtitle, font=subtitle_font, fill=(157, 231, 239))
+
+    draw.rounded_rectangle((120, 770, 780, 1015), radius=30, fill=(8, 21, 34, 220), outline=(113, 220, 231), width=4)
+    lines = [
+        "5 RANDOM PAL CARDS",
+        "Final card guaranteed 2 stars or higher",
+        f"Prepared for {owner_name}",
+    ]
+    y = 815
+    for index, line in enumerate(lines):
+        font = subtitle_font if index == 0 else body_font
+        box = draw.textbbox((0, 0), line, font=font)
+        draw.text(((width - (box[2] - box[0])) / 2, y), line, font=font, fill="white")
+        y += 68 if index == 0 else 55
+
+    draw.text((75, 1090), "Press Open Pack to reveal your cards", font=small_font, fill=(190, 225, 232))
+
+    output = BytesIO()
+    card.convert("RGB").save(output, format="PNG", optimize=True)
+    output.seek(0)
+    return output
+
+
+class PalDeckView(discord.ui.View):
+    """Open and browse a fixed five-card preview pack."""
+
+    def __init__(
+        self,
+        *,
+        owner_id: int,
+        cards: list[dict[str, Any]],
+        cover_png: bytes,
+    ) -> None:
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+        self.cards = cards
+        self.cover_png = cover_png
+        self.current_index = 0
+        self.opened = False
+        self._sync_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "Only the user who opened this Pal deck can use these buttons.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def _sync_buttons(self) -> None:
+        self.open_button.disabled = self.opened
+        self.open_button.label = "Pack Opened" if self.opened else "Open Pack"
+        self.back_button.disabled = not self.opened or self.current_index == 0
+        self.next_button.disabled = not self.opened or self.current_index >= len(self.cards) - 1
+
+    def _cover_message(self) -> tuple[discord.Embed, discord.File]:
+        filename = f"pal_deck_cover_{self.owner_id}.png"
+        file = discord.File(BytesIO(self.cover_png), filename=filename)
+        embed = discord.Embed(
+            title="Sealed Pal Deck",
+            description=(
+                "Contains **5 cards**.\n"
+                "The fifth card is guaranteed to be **2 stars or higher**.\n\n"
+                "This preview does not save cards or consume daily rolls."
+            ),
+            color=discord.Color.teal(),
+        )
+        embed.set_image(url=f"attachment://{filename}")
+        return embed, file
+
+    def _card_message(self) -> tuple[discord.Embed, discord.File]:
+        card = self.cards[self.current_index]
+        filename = f"deck_card_{self.owner_id}_{self.current_index + 1}.png"
+        file = discord.File(BytesIO(card["png"]), filename=filename)
+        guaranteed = self.current_index == len(self.cards) - 1
+
+        embed = discord.Embed(
+            title=(
+                f"Card {self.current_index + 1} of {len(self.cards)} — "
+                f"{card['tier']['emoji']} {get_pal_display_name(card['pal_name'], card['tier_name'])}"
+            ),
+            description=(
+                f"**Paldeck:** `#{card['pal_number']}`\n"
+                f"**Tier:** {card['tier_name']} {card['tier']['stars']}\n"
+                f"**Passives:** {len(card['traits'])}/4"
+                + ("\n**Guaranteed slot:** 2 stars or higher" if guaranteed else "")
+                + "\n\nUse **Back** and **Next** to browse this pack."
+            ),
+            color=card["tier"]["color"],
+        )
+        embed.set_image(url=f"attachment://{filename}")
+        embed.set_footer(text="Preview only • Nothing from this pack is stored")
+        return embed, file
+
+    @discord.ui.button(label="Open Pack", style=discord.ButtonStyle.success, row=0)
+    async def open_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.opened = True
+        self.current_index = 0
+        self._sync_buttons()
+        embed, file = self._card_message()
+        await interaction.response.edit_message(
+            embed=embed,
+            attachments=[file],
+            view=self,
+        )
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary, row=0)
+    async def back_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if self.current_index > 0:
+            self.current_index -= 1
+        self._sync_buttons()
+        embed, file = self._card_message()
+        await interaction.response.edit_message(
+            embed=embed,
+            attachments=[file],
+            view=self,
+        )
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, row=0)
+    async def next_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if self.current_index < len(self.cards) - 1:
+            self.current_index += 1
+        self._sync_buttons()
+        embed, file = self._card_message()
+        await interaction.response.edit_message(
+            embed=embed,
+            attachments=[file],
+            view=self,
+        )
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+
+
+async def create_pal_deck_cards(owner_name: str) -> tuple[list[dict[str, Any]], bytes]:
+    """Generate five fixed preview cards and a pack cover."""
+    pals, passive_skills = await asyncio.gather(
+        fetch_pals(),
+        fetch_palworld_1_0_passive_skills(),
+    )
+
+    chosen_pals = random.choices(pals, k=5)
+    card_specs: list[dict[str, Any]] = []
+
+    for index, pal in enumerate(chosen_pals):
+        if index == 4:
+            tier_name, tier = roll_guaranteed_two_star_tier()
+        else:
+            tier_name, tier = roll_pal_tier()
+
+        card_specs.append(
+            {
+                "pal_number": str(pal["key"]),
+                "pal_name": str(pal["name"]),
+                "image_url": normalize_image_url(str(pal["image"])),
+                "tier_name": tier_name,
+                "tier": tier,
+                "traits": roll_real_passive_traits(passive_skills, tier_name),
+            }
+        )
+
+    pal_pngs = await asyncio.gather(
+        *(download_image_bytes(card["image_url"]) for card in card_specs)
+    )
+
+    rendered_cards = await asyncio.gather(
+        *(
+            asyncio.to_thread(
+                build_pal_card_png,
+                pal_png,
+                pal_number=spec["pal_number"],
+                pal_name=spec["pal_name"],
+                tier_name=spec["tier_name"],
+                tier=spec["tier"],
+                traits=spec["traits"],
+            )
+            for spec, pal_png in zip(card_specs, pal_pngs)
+        )
+    )
+
+    for spec, rendered in zip(card_specs, rendered_cards):
+        spec["png"] = rendered.getvalue()
+
+    cover_buffer = await asyncio.to_thread(
+        build_pal_pack_cover_png,
+        list(pal_pngs[:3]),
+        owner_name=owner_name,
+    )
+    return card_specs, cover_buffer.getvalue()
+
+
+@bot.tree.command(
+    name="open_pal_deck",
+    description="Open a five-card Pal deck preview",
+    guild=guild,
+)
+async def open_pal_deck(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+
+    try:
+        cards, cover_png = await create_pal_deck_cards(interaction.user.display_name)
+        view = PalDeckView(
+            owner_id=interaction.user.id,
+            cards=cards,
+            cover_png=cover_png,
+        )
+
+        embed, file = view._cover_message()
+        await interaction.followup.send(
+            embed=embed,
+            file=file,
+            view=view,
+        )
+
+    except aiohttp.ClientResponseError as error:
+        log.exception("Pal deck HTTP error: %s", error)
+        await interaction.followup.send(
+            f"Could not load Pal deck data. HTTP status: {error.status}",
+            ephemeral=True,
+        )
+    except Exception as error:
+        log.exception("Failed to open Pal deck: %s", error)
+        await interaction.followup.send(
+            "An error occurred while creating the Pal deck.",
+            ephemeral=True,
+        )
+
 @bot.command()
 async def dbtest(ctx):
     try:
