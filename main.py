@@ -585,8 +585,11 @@ async def cats(interaction: discord.Interaction):
 async def test(interaction: discord.Interaction):
     await interaction.response.send_message("Hello World!")
 
-PALDECK_PALS_URLS = ("https://api.paldeck.cc/pals", "https://paldeck.cc/pals")
-PALDECK_BASE_URL = "https://paldeck.cc"
+PAL_DATA_URL = "https://mobalytics.gg/gamebase/guides/palworld-all-pals"
+PAL_DATA_BASE_URL = "https://mobalytics.gg"
+MIN_EXPECTED_PAL_RECORDS = 250
+MIN_EXPECTED_MAX_BASE_NUMBER = 200
+_PALS_CACHE: Optional[list[dict[str, Any]]] = None
 
 
 PAL_TIERS: dict[str, dict[str, Any]] = {
@@ -684,7 +687,6 @@ TEST_TRAITS = [
 
 
 def roll_pal_tier() -> tuple[str, dict[str, Any]]:
-    """Roll one custom rarity tier."""
     names = list(PAL_TIERS.keys())
     weights = [PAL_TIERS[name]["weight"] for name in names]
     tier_name = random.choices(names, weights=weights, k=1)[0]
@@ -692,151 +694,82 @@ def roll_pal_tier() -> tuple[str, dict[str, Any]]:
 
 
 def generate_test_traits(tier_name: str) -> list[str]:
-    """Generate placeholder traits according to the rolled tier."""
-    trait_count = min(
-        int(PAL_TIERS[tier_name]["trait_count"]),
-        len(TEST_TRAITS),
-    )
+    trait_count = min(int(PAL_TIERS[tier_name]["trait_count"]), len(TEST_TRAITS))
     return random.sample(TEST_TRAITS, trait_count) if trait_count else []
 
 
 def normalize_image_url(image_value: str) -> str:
-    """Normalize Paldeck and Next.js image URLs into direct absolute URLs."""
+    """Return a direct absolute image URL, including lazy-loaded CDN images."""
     image_value = str(image_value or "").strip()
     if not image_value:
         return ""
-
-    absolute = urljoin(PALDECK_BASE_URL, image_value)
-    parsed = urlparse(absolute)
-
-    # Paldeck may serve images through Next.js: /_next/image?url=<real-url>.
-    if parsed.path == "/_next/image":
-        nested = parse_qs(parsed.query).get("url", [])
-        if nested:
-            return urljoin(PALDECK_BASE_URL, unquote(nested[0]))
-
-    return absolute
+    return urljoin(PAL_DATA_BASE_URL, image_value)
 
 
-def _clean_pal_number(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    match = re.search(r"#?\s*(\d{1,3}[A-Z]?)\b", str(value).upper())
-    return match.group(1) if match else None
+def _extract_best_img_src(image: Any) -> str:
+    """Read common lazy-image attributes and prefer the largest srcset entry."""
+    for attr in ("data-src", "data-lazy-src", "data-original", "src"):
+        value = str(image.get(attr) or "").strip()
+        if value and not value.startswith("data:image"):
+            return value
+
+    srcset = str(image.get("data-srcset") or image.get("srcset") or "").strip()
+    if srcset:
+        candidates: list[tuple[int, str]] = []
+        for part in srcset.split(","):
+            bits = part.strip().split()
+            if not bits:
+                continue
+            url = bits[0]
+            width = 0
+            if len(bits) > 1:
+                match = re.match(r"(\d+)(?:w|x)", bits[1])
+                if match:
+                    width = int(match.group(1))
+            candidates.append((width, url))
+        if candidates:
+            return max(candidates, key=lambda item: item[0])[1]
+
+    return ""
 
 
-def _is_probable_pal_artwork(image: Any, pal_name: str) -> bool:
-    """Reject element/work icons and accept artwork that identifies the Pal."""
-    if image is None:
-        return False
-
-    alt = str(image.get("alt") or "").strip()
-    src = str(image.get("src") or image.get("data-src") or "").strip()
-    if not src:
-        return False
-
-    normalized_alt = re.sub(r"\s+", " ", alt).strip().casefold()
-    normalized_name = re.sub(r"\s+", " ", pal_name).strip().casefold()
-
-    blocked_alts = {
-        "dark", "grass", "ground", "water", "fire", "ice", "neutral",
-        "electric", "dragon", "handiwork", "gathering", "lumbering",
-        "transporting", "planting", "medicine production", "watering",
-        "mining", "kindling", "farming", "cooling",
-        "generating electricity", "image",
-    }
-    if normalized_alt in blocked_alts:
-        return False
-
-    # Paldeck's real artwork currently uses the Pal name as its alt text.
-    if normalized_alt == normalized_name:
-        return True
-    if normalized_alt in {f"{normalized_name} image", f"image: {normalized_name}"}:
-        return True
-
-    # Conservative fallback for artwork URLs whose filename contains the name.
-    slug = re.sub(r"[^a-z0-9]+", "", normalized_name)
-    src_slug = re.sub(r"[^a-z0-9]+", "", unquote(src).casefold())
-    return bool(slug and len(slug) >= 4 and slug in src_slug)
-
-
-def _parse_paldeck_html(html: str) -> list[dict[str, Any]]:
-    """Parse Paldeck list cards without leaking data from neighboring cards."""
+def _parse_mobalytics_pal_html(html: str) -> list[dict[str, Any]]:
+    """Parse the complete static Palpedia table (including 1.0 Pals)."""
     soup = BeautifulSoup(html, "html.parser")
     found: dict[tuple[str, str], dict[str, Any]] = {}
 
-    for anchor in soup.find_all("a", href=True):
-        href = str(anchor.get("href") or "").strip()
-        absolute_href = urljoin(PALDECK_BASE_URL, href)
-        path = urlparse(absolute_href).path.rstrip("/")
+    blocked_names = {
+        "theme", "mobalytics", "palworld", "image", "download app",
+    }
 
-        match = re.fullmatch(r"/pals/([^/]+)", path, flags=re.I)
-        if not match:
+    for image in soup.find_all("img"):
+        pal_name = re.sub(r"\s+", " ", str(image.get("alt") or "")).strip()
+        if not pal_name or pal_name.casefold() in blocked_names:
             continue
 
-        href_name = unquote(match.group(1)).replace("+", " ").replace("-", " ")
-        href_name = re.sub(r"\s+", " ", href_name).strip()
-
-        # IMPORTANT: read only this anchor/card. The previous implementation
-        # climbed to a large parent div and repeatedly captured the first #ID.
-        anchor_text = " ".join(anchor.stripped_strings)
-        number_match = re.search(r"#\s*(\d{1,3}[A-Z]?)\b", anchor_text.upper())
-
-        # Some layouts put the visible number in a very small direct wrapper.
-        local = anchor
-        if not number_match:
-            parent = anchor.parent
-            if parent is not None and len(parent.find_all("a", recursive=True)) == 1:
-                local = parent
-                local_text = " ".join(parent.stripped_strings)
-                number_match = re.search(r"#\s*(\d{1,3}[A-Z]?)\b", local_text.upper())
-
-        if not number_match:
-            continue
-        number = number_match.group(1)
-
-        # Prefer a visible name from this card, but never use work/element text.
-        visible_name = None
-        for node in anchor.find_all(["h2", "h3", "h4", "span", "p"]):
-            text = " ".join(node.stripped_strings).strip()
-            if not text or re.fullmatch(r"#?\d{1,3}[A-Z]?", text.upper()):
-                continue
-            if text.casefold() in {
-                "dark", "grass", "ground", "water", "fire", "ice", "neutral",
-                "electric", "dragon", "handiwork", "gathering", "lumbering",
-                "transporting", "planting", "medicine production", "watering",
-                "mining", "kindling", "farming", "cooling",
-                "generating electricity",
-            }:
-                continue
-            if re.search(r"\b(?:lv\.?|level)\s*\d+\b", text, flags=re.I):
-                continue
-            if text.casefold() == href_name.casefold() or href_name.casefold() in text.casefold():
-                visible_name = href_name
+        # Find the smallest nearby container containing '#<number> <Pal name>'.
+        container = image
+        number: Optional[str] = None
+        for _ in range(8):
+            container = getattr(container, "parent", None)
+            if container is None:
+                break
+            local_text = " ".join(container.stripped_strings)
+            escaped_name = re.escape(pal_name)
+            match = re.search(
+                rf"#\s*(\d{{1,3}}[A-Z]?)\s+{escaped_name}(?:\b|$)",
+                local_text,
+                flags=re.I,
+            )
+            if match:
+                number = match.group(1).upper()
                 break
 
-        pal_name = visible_name or href_name
-        if not pal_name:
+        if not number:
             continue
 
-        # Only inspect images inside this link or its single-card wrapper.
-        candidates = list(anchor.find_all("img"))
-        if local is not anchor:
-            candidates.extend(local.find_all("img"))
-
-        artwork = next(
-            (img for img in candidates if _is_probable_pal_artwork(img, pal_name)),
-            None,
-        )
-        if artwork is None:
-            continue
-
-        src = (
-            artwork.get("data-src")
-            or artwork.get("src")
-            or artwork.get("data-lazy-src")
-        )
-        image_url = normalize_image_url(str(src or ""))
+        image_src = _extract_best_img_src(image)
+        image_url = normalize_image_url(image_src)
         if not image_url:
             continue
 
@@ -845,54 +778,71 @@ def _parse_paldeck_html(html: str) -> list[dict[str, Any]]:
             "key": number,
             "name": pal_name,
             "image": image_url,
-            "detail_url": absolute_href,
+            "detail_url": PAL_DATA_URL,
         }
 
     pals = list(found.values())
-
-    # Reject a broken parse rather than silently returning one repeated Pal.
     unique_names = {pal["name"].casefold() for pal in pals}
     unique_numbers = {pal["key"] for pal in pals}
-    if len(unique_names) < 20 or len(unique_numbers) < 20:
-        return []
+    base_numbers = [
+        int(match.group(1))
+        for pal in pals
+        if (match := re.fullmatch(r"(\d+)([A-Z]?)", pal["key"]))
+    ]
+    highest_base_number = max(base_numbers, default=0)
+
+    if (
+        len(pals) < MIN_EXPECTED_PAL_RECORDS
+        or len(unique_names) < MIN_EXPECTED_PAL_RECORDS
+        or len(unique_numbers) < MIN_EXPECTED_PAL_RECORDS
+        or highest_base_number < MIN_EXPECTED_MAX_BASE_NUMBER
+    ):
+        raise ValueError(
+            "Incomplete Palpedia parse: "
+            f"records={len(pals)}, names={len(unique_names)}, "
+            f"numbers={len(unique_numbers)}, max={highest_base_number}"
+        )
 
     def sort_key(pal: dict[str, Any]) -> tuple[int, str, str]:
-        m = re.fullmatch(r"(\d+)([A-Z]?)", pal["key"])
-        if not m:
+        match = re.fullmatch(r"(\d+)([A-Z]?)", pal["key"])
+        if not match:
             return (9999, "", pal["name"])
-        return (int(m.group(1)), m.group(2), pal["name"])
+        return (int(match.group(1)), match.group(2), pal["name"])
 
     return sorted(pals, key=sort_key)
 
 
-async def fetch_pals() -> list[dict[str, Any]]:
-    """Load the current Pal list from Paldeck, validating parser quality."""
-    timeout = aiohttp.ClientTimeout(total=30)
+async def fetch_pals(*, force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Load and cache the complete current Palpedia roster."""
+    global _PALS_CACHE
+
+    if _PALS_CACHE is not None and not force_refresh:
+        return _PALS_CACHE
+
+    timeout = aiohttp.ClientTimeout(total=45)
     headers = {
         "User-Agent": "Mozilla/5.0 PalworldDiscordBot/1.0",
         "Accept": "text/html,application/xhtml+xml",
     }
-    errors: list[str] = []
 
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        for source_url in PALDECK_PALS_URLS:
-            try:
-                async with session.get(source_url) as response:
-                    response.raise_for_status()
-                    html = await response.text()
-                pals = _parse_paldeck_html(html)
-                if pals:
-                    log.info(
-                        "Loaded %s unique Pals from %s",
-                        len(pals),
-                        source_url,
-                    )
-                    return pals
-                errors.append(f"{source_url}: parser returned too few unique records")
-            except Exception as error:
-                errors.append(f"{source_url}: {error}")
+        async with session.get(PAL_DATA_URL) as response:
+            response.raise_for_status()
+            html = await response.text()
 
-    raise ValueError("Could not parse Paldeck Pal records. " + " | ".join(errors))
+    pals = _parse_mobalytics_pal_html(html)
+    highest = max(
+        int(match.group(1))
+        for pal in pals
+        if (match := re.fullmatch(r"(\d+)([A-Z]?)", pal["key"]))
+    )
+    log.info(
+        "Loaded complete Pal roster: %s records; highest base number #%s",
+        len(pals),
+        highest,
+    )
+    _PALS_CACHE = pals
+    return pals
 
 
 PAL_DAILY_ROLL_LIMIT = 5
@@ -2102,7 +2052,8 @@ async def pal_card(interaction: discord.Interaction) -> None:
 # Interactive seven-card Pal deck (not stored in the database)
 # ---------------------------------------------------------------------------
 PAL_PACK_COVER_URL = (
-    "https://cdn11.bigcommerce.com/s-ua4dd/images/stencil/original/products/346692/543461/Gamenerdzimagez1124__53572.1782768733.png"
+    "https://cdn11.bigcommerce.com/s-ua4dd/images/stencil/original/"
+    "products/346692/543461/Gamenerdzimagez1124__53572.1782768733.png"
 )
 
 PAL_PACK_SIZE = 7
