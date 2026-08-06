@@ -2,6 +2,9 @@ from discord.ext import tasks
 from datetime import datetime, timezone, timedelta
 import random
 import logging, sys
+import json
+import re
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 import aiohttp
 import asyncio
 from io import BytesIO
@@ -582,15 +585,8 @@ async def cats(interaction: discord.Interaction):
 async def test(interaction: discord.Interaction):
     await interaction.response.send_message("Hello World!")
 
-PALS_JSON_URL = (
-    "https://raw.githubusercontent.com/mlg404/"
-    "palworld-paldex-api/main/src/pals.json"
-)
-
-IMAGE_BASE_URL = (
-    "https://raw.githubusercontent.com/mlg404/"
-    "palworld-paldex-api/main"
-)
+PALDECK_PALS_URL = "https://paldeck.cc/pals"
+PALDECK_BASE_URL = "https://paldeck.cc"
 
 
 PAL_TIERS: dict[str, dict[str, Any]] = {
@@ -691,71 +687,160 @@ def roll_pal_tier() -> tuple[str, dict[str, Any]]:
     """Roll one custom rarity tier."""
     names = list(PAL_TIERS.keys())
     weights = [PAL_TIERS[name]["weight"] for name in names]
-
-    tier_name = random.choices(
-        population=names,
-        weights=weights,
-        k=1,
-    )[0]
-
+    tier_name = random.choices(names, weights=weights, k=1)[0]
     return tier_name, PAL_TIERS[tier_name]
 
 
 def generate_test_traits(tier_name: str) -> list[str]:
     """Generate placeholder traits according to the rolled tier."""
-    trait_count = int(PAL_TIERS[tier_name]["trait_count"])
-    trait_count = min(trait_count, len(TEST_TRAITS))
-
-    if trait_count <= 0:
-        return []
-
-    return random.sample(TEST_TRAITS, trait_count)
+    trait_count = min(
+        int(PAL_TIERS[tier_name]["trait_count"]),
+        len(TEST_TRAITS),
+    )
+    return random.sample(TEST_TRAITS, trait_count) if trait_count else []
 
 
 def normalize_image_url(image_value: str) -> str:
-    """Turn a repository-relative image path into a raw GitHub URL."""
-    image_value = str(image_value).strip()
+    """Normalize Paldeck and Next.js image URLs into direct absolute URLs."""
+    image_value = str(image_value or "").strip()
+    if not image_value:
+        return ""
 
-    if image_value.startswith(("https://", "http://")):
-        return image_value
+    absolute = urljoin(PALDECK_BASE_URL, image_value)
+    parsed = urlparse(absolute)
 
-    if not image_value.startswith("/"):
-        image_value = f"/{image_value}"
+    # Paldeck may serve images through Next.js: /_next/image?url=<real-url>.
+    if parsed.path == "/_next/image":
+        nested = parse_qs(parsed.query).get("url", [])
+        if nested:
+            return urljoin(PALDECK_BASE_URL, unquote(nested[0]))
 
-    return f"{IMAGE_BASE_URL}{image_value}"
+    return absolute
+
+
+def _clean_pal_number(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    match = re.search(r"#?\s*(\d{1,3}[A-Z]?)\b", str(value).upper())
+    return match.group(1) if match else None
+
+
+def _walk_json_for_pals(value: Any, output: dict[str, dict[str, Any]]) -> None:
+    """Recursively extract Pal-like records from embedded Next.js JSON."""
+    if isinstance(value, dict):
+        name = next(
+            (value.get(k) for k in ("name", "Name", "displayName", "title") if value.get(k)),
+            None,
+        )
+        number = next(
+            (_clean_pal_number(value.get(k)) for k in (
+                "number", "palNumber", "paldexNumber", "deckNumber", "key", "no"
+            ) if value.get(k) is not None),
+            None,
+        )
+        image = next(
+            (value.get(k) for k in (
+                "image", "imageUrl", "image_url", "icon", "iconUrl", "thumbnail"
+            ) if isinstance(value.get(k), str) and value.get(k)),
+            None,
+        )
+
+        if name and number and image:
+            image_url = normalize_image_url(image)
+            if image_url:
+                output[number] = {
+                    "key": number,
+                    "name": str(name).strip(),
+                    "image": image_url,
+                }
+
+        for child in value.values():
+            _walk_json_for_pals(child, output)
+
+    elif isinstance(value, list):
+        for child in value:
+            _walk_json_for_pals(child, output)
+
+
+def _parse_paldeck_html(html: str) -> list[dict[str, Any]]:
+    """Parse Paldeck's current webpage into the bot's key/name/image shape."""
+    soup = BeautifulSoup(html, "html.parser")
+    found: dict[str, dict[str, Any]] = {}
+
+    # First try structured JSON embedded by Next.js or other page scripts.
+    for script in soup.find_all("script"):
+        raw = script.string or script.get_text(strip=True)
+        if not raw or raw[0] not in "[{":
+            continue
+        try:
+            _walk_json_for_pals(json.loads(raw), found)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    # DOM fallback: locate Pal images and read name/number from their card.
+    for image in soup.find_all("img"):
+        src = image.get("src") or image.get("data-src")
+        if not src:
+            continue
+
+        alt = str(image.get("alt") or "").strip()
+        parent = image.find_parent("a", href=re.compile(r"/pals?/"))
+        card = parent or image.find_parent(["article", "li", "div"])
+        if card is None:
+            continue
+
+        text = " ".join(card.stripped_strings)
+        number = _clean_pal_number(text)
+        if not number:
+            continue
+
+        name = re.sub(r"\s+Image$", "", alt, flags=re.I).strip()
+        if not name or name.lower() in {"image", "pal image", "paldeck logo"}:
+            heading = card.find(["h1", "h2", "h3", "h4", "strong"])
+            name = heading.get_text(" ", strip=True) if heading else ""
+
+        name = re.sub(r"#\s*\d{1,3}[A-Z]?", "", name).strip()
+        if not name:
+            # Typical card text ends with "Name #12B".
+            match = re.search(r"([A-Za-z][A-Za-z '\-.]+?)\s*#\s*\d{1,3}[A-Z]?", text)
+            name = match.group(1).strip() if match else ""
+
+        image_url = normalize_image_url(src)
+        if name and image_url:
+            found[number] = {
+                "key": number,
+                "name": name,
+                "image": image_url,
+            }
+
+    def sort_key(pal: dict[str, Any]) -> tuple[int, str]:
+        match = re.match(r"(\d+)([A-Z]?)", pal["key"])
+        return (int(match.group(1)), match.group(2)) if match else (9999, pal["key"])
+
+    return sorted(found.values(), key=sort_key)
 
 
 async def fetch_pals() -> list[dict[str, Any]]:
-    """
-    Load the repository Pal list.
+    """Load the current Palworld 1.0 Pal list from Paldeck.cc."""
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {
+        "User-Agent": "Mozilla/5.0 PalworldDiscordBot/1.0",
+        "Accept": "text/html,application/xhtml+xml,application/json",
+    }
 
-    GitHub raw responds with text/plain, so content_type=None is required.
-    """
-    timeout = aiohttp.ClientTimeout(total=15)
-
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(PALS_JSON_URL) as response:
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(PALDECK_PALS_URL) as response:
             response.raise_for_status()
-            data = await response.json(content_type=None)
+            html = await response.text()
 
-    if not isinstance(data, list) or not data:
-        raise ValueError("Pal API returned an empty or invalid list.")
+    pals = _parse_paldeck_html(html)
+    if not pals:
+        raise ValueError(
+            "Paldeck.cc returned no usable Pal records; its page layout may have changed."
+        )
 
-    valid_pals: list[dict[str, Any]] = []
-
-    for pal in data:
-        if not isinstance(pal, dict):
-            continue
-
-        if not all(key in pal for key in ("key", "name", "image")):
-            continue
-
-        valid_pals.append(pal)
-
-    if not valid_pals:
-        raise ValueError("Pal API returned no usable Pal records.")
-
-    return valid_pals
+    log.info("Loaded %s Pals from Paldeck.cc", len(pals))
+    return pals
 
 
 PAL_DAILY_ROLL_LIMIT = 5
@@ -1958,7 +2043,10 @@ async def pal_card(interaction: discord.Interaction) -> None:
 # Interactive seven-card Pal deck (not stored in the database)
 # ---------------------------------------------------------------------------
 PAL_PACK_COVER_URL = (
-    "https://cdn11.bigcommerce.com/s-ua4dd/images/stencil/original/products/346692/543461/Gamenerdzimagez1124__53572.1782768733.png"
+    "https://cdn.discordapp.com/attachments/928447198746804265/"
+    "1534757274117996645/dawnofpalpagosboosterpack.png"
+    "?ex=6a754998&is=6a73f818&"
+    "hm=bc75ac921c9876bb095e6b78480050c83a314a75c86a4d6ab31d4fba1c3a76ad&"
 )
 
 PAL_PACK_SIZE = 7
@@ -1981,7 +2069,7 @@ def roll_guaranteed_two_star_tier() -> tuple[str, dict[str, Any]]:
 
 
 class PalDeckView(discord.ui.View):
-    """Open and browse one fixed seven-card Pal pack."""
+    """Open and browse one fixed seven-card Pal pack with cached attachments."""
 
     def __init__(
         self,
@@ -1994,6 +2082,12 @@ class PalDeckView(discord.ui.View):
         self.cards = cards
         self.current_index = 0
         self.opened = False
+
+        # Stable attachment names let every embed reference an image that was
+        # uploaded once when the pack opened.
+        for index, card in enumerate(self.cards, start=1):
+            card["filename"] = f"deck_card_{owner_id}_{index}.png"
+
         self._sync_buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -2026,10 +2120,19 @@ class PalDeckView(discord.ui.View):
         embed.set_image(url=PAL_PACK_COVER_URL)
         return embed
 
-    def _card_message(self) -> tuple[discord.Embed, discord.File]:
+    def _all_card_files(self) -> list[discord.File]:
+        """Create the seven attachments used for the whole browsing session."""
+        return [
+            discord.File(
+                BytesIO(card["png"]),
+                filename=card["filename"],
+            )
+            for card in self.cards
+        ]
+
+    def _card_embed(self) -> discord.Embed:
+        """Build the current card embed without regenerating or uploading it."""
         card = self.cards[self.current_index]
-        filename = f"deck_card_{self.owner_id}_{self.current_index + 1}.png"
-        file = discord.File(BytesIO(card["png"]), filename=filename)
         guaranteed = self.current_index == len(self.cards) - 1
 
         description = (
@@ -2050,8 +2153,8 @@ class PalDeckView(discord.ui.View):
             description=description,
             color=card["tier"]["color"],
         )
-        embed.set_image(url=f"attachment://{filename}")
-        return embed, file
+        embed.set_image(url=f"attachment://{card['filename']}")
+        return embed
 
     @discord.ui.button(
         label="Open Pack",
@@ -2066,10 +2169,12 @@ class PalDeckView(discord.ui.View):
         self.opened = True
         self.current_index = 0
         self._sync_buttons()
-        embed, file = self._card_message()
+
+        # Upload all seven rendered cards once. Later navigation edits only the
+        # embed and buttons, so no image download, Pillow render, or re-upload.
         await interaction.response.edit_message(
-            embed=embed,
-            attachments=[file],
+            embed=self._card_embed(),
+            attachments=self._all_card_files(),
             view=self,
         )
 
@@ -2086,10 +2191,11 @@ class PalDeckView(discord.ui.View):
         if self.current_index > 0:
             self.current_index -= 1
         self._sync_buttons()
-        embed, file = self._card_message()
+
+        # The card images are already attached to the message. This edit only
+        # changes the attachment:// URL used by the embed.
         await interaction.response.edit_message(
-            embed=embed,
-            attachments=[file],
+            embed=self._card_embed(),
             view=self,
         )
 
@@ -2106,10 +2212,9 @@ class PalDeckView(discord.ui.View):
         if self.current_index < len(self.cards) - 1:
             self.current_index += 1
         self._sync_buttons()
-        embed, file = self._card_message()
+
         await interaction.response.edit_message(
-            embed=embed,
-            attachments=[file],
+            embed=self._card_embed(),
             view=self,
         )
 
