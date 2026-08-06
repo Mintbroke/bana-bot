@@ -539,8 +539,45 @@ async def test(interaction: discord.Interaction):
     await interaction.response.send_message("Hello World!")
 
 @bot.tree.command(name="test2", guild=guild)
-async def test2(interaction: discord.Interaction):
-    await interaction.response.send_message("Hello World!")
+async def test2(interaction: discord.Interaction, number: str):
+    # Validate format: exactly 3 digits
+    if not (len(number) == 3 and number.isdigit()):
+        await interaction.response.send_message(
+            "Please enter a 3-digit Paldeck number (e.g. 001, 025, 085).",
+            ephemeral=True
+        )
+        return
+
+    image_url = f"https://raw.githubusercontent.com/mlg404/palworld-paldex-api/main/public/images/paldeck/{number}.png"
+
+    embed = discord.Embed(
+        title=f"Pal #{number}",
+        color=discord.Color.blurple()
+    )
+    embed.set_image(url=image_url)
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="pal", description="Show a Pal by Paldeck number", guild=guild)
+@app_commands.describe(number="Paldeck number (e.g. 001, 025, 085)")
+async def pal(interaction: discord.Interaction, number: str):
+    # Validate format: exactly 3 digits
+    if not (len(number) == 3 and number.isdigit()):
+        await interaction.response.send_message(
+            "Please enter a 3-digit Paldeck number (e.g. 001, 025, 085).",
+            ephemeral=True
+        )
+        return
+
+    image_url = f"https://raw.githubusercontent.com/mlg404/palworld-paldex-api/main/public/images/paldeck/{number}.png"
+
+    embed = discord.Embed(
+        title=f"Pal #{number}",
+        color=discord.Color.blurple()
+    )
+    embed.set_image(url=image_url)
+
+    await interaction.response.send_message(embed=embed)
 
 @bot.command()
 async def dbtest(ctx):
