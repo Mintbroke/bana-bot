@@ -1984,7 +1984,7 @@ def roll_guaranteed_two_star_tier() -> tuple[str, dict[str, Any]]:
 
 
 class PalDeckView(discord.ui.View):
-    """Open and browse one fixed seven-card Pal pack."""
+    """Open and browse one fixed seven-card Pal pack with cached attachments."""
 
     def __init__(
         self,
@@ -1997,6 +1997,12 @@ class PalDeckView(discord.ui.View):
         self.cards = cards
         self.current_index = 0
         self.opened = False
+
+        # Stable attachment names let every embed reference an image that was
+        # uploaded once when the pack opened.
+        for index, card in enumerate(self.cards, start=1):
+            card["filename"] = f"deck_card_{owner_id}_{index}.png"
+
         self._sync_buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -2029,10 +2035,19 @@ class PalDeckView(discord.ui.View):
         embed.set_image(url=PAL_PACK_COVER_URL)
         return embed
 
-    def _card_message(self) -> tuple[discord.Embed, discord.File]:
+    def _all_card_files(self) -> list[discord.File]:
+        """Create the seven attachments used for the whole browsing session."""
+        return [
+            discord.File(
+                BytesIO(card["png"]),
+                filename=card["filename"],
+            )
+            for card in self.cards
+        ]
+
+    def _card_embed(self) -> discord.Embed:
+        """Build the current card embed without regenerating or uploading it."""
         card = self.cards[self.current_index]
-        filename = f"deck_card_{self.owner_id}_{self.current_index + 1}.png"
-        file = discord.File(BytesIO(card["png"]), filename=filename)
         guaranteed = self.current_index == len(self.cards) - 1
 
         description = (
@@ -2053,8 +2068,8 @@ class PalDeckView(discord.ui.View):
             description=description,
             color=card["tier"]["color"],
         )
-        embed.set_image(url=f"attachment://{filename}")
-        return embed, file
+        embed.set_image(url=f"attachment://{card['filename']}")
+        return embed
 
     @discord.ui.button(
         label="Open Pack",
@@ -2069,10 +2084,12 @@ class PalDeckView(discord.ui.View):
         self.opened = True
         self.current_index = 0
         self._sync_buttons()
-        embed, file = self._card_message()
+
+        # Upload all seven rendered cards once. Later navigation edits only the
+        # embed and buttons, so no image download, Pillow render, or re-upload.
         await interaction.response.edit_message(
-            embed=embed,
-            attachments=[file],
+            embed=self._card_embed(),
+            attachments=self._all_card_files(),
             view=self,
         )
 
@@ -2089,10 +2106,11 @@ class PalDeckView(discord.ui.View):
         if self.current_index > 0:
             self.current_index -= 1
         self._sync_buttons()
-        embed, file = self._card_message()
+
+        # The card images are already attached to the message. This edit only
+        # changes the attachment:// URL used by the embed.
         await interaction.response.edit_message(
-            embed=embed,
-            attachments=[file],
+            embed=self._card_embed(),
             view=self,
         )
 
@@ -2109,10 +2127,9 @@ class PalDeckView(discord.ui.View):
         if self.current_index < len(self.cards) - 1:
             self.current_index += 1
         self._sync_buttons()
-        embed, file = self._card_message()
+
         await interaction.response.edit_message(
-            embed=embed,
-            attachments=[file],
+            embed=self._card_embed(),
             view=self,
         )
 
