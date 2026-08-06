@@ -585,7 +585,7 @@ async def cats(interaction: discord.Interaction):
 async def test(interaction: discord.Interaction):
     await interaction.response.send_message("Hello World!")
 
-PALDECK_PALS_URL = "https://paldeck.cc/pals"
+PALDECK_PALS_URLS = ("https://api.paldeck.cc/pals", "https://paldeck.cc/pals")
 PALDECK_BASE_URL = "https://paldeck.cc"
 
 
@@ -761,50 +761,68 @@ def _is_probable_pal_artwork(image: Any, pal_name: str) -> bool:
 
 
 def _parse_paldeck_html(html: str) -> list[dict[str, Any]]:
-    """
-    Parse only actual Pal detail links from Paldeck.
-
-    This deliberately ignores generic JSON objects and filter icons because
-    those previously caused work-suitability names/icons to be mistaken for
-    Pal names/artwork.
-    """
+    """Parse Paldeck list cards without leaking data from neighboring cards."""
     soup = BeautifulSoup(html, "html.parser")
-    found: dict[str, dict[str, Any]] = {}
+    found: dict[tuple[str, str], dict[str, Any]] = {}
 
     for anchor in soup.find_all("a", href=True):
         href = str(anchor.get("href") or "").strip()
-        parsed_href = urlparse(urljoin(PALDECK_BASE_URL, href))
-        path = parsed_href.path.rstrip("/")
+        absolute_href = urljoin(PALDECK_BASE_URL, href)
+        path = urlparse(absolute_href).path.rstrip("/")
 
-        # Actual records are linked as /pals/<Pal Name>. Ignore /pals itself,
-        # filters, assets, and every other database route.
         match = re.fullmatch(r"/pals/([^/]+)", path, flags=re.I)
         if not match:
             continue
 
-        pal_name = unquote(match.group(1)).replace("+", " ").strip()
-        pal_name = re.sub(r"\s+", " ", pal_name)
-        if not pal_name or pal_name.casefold() in {"pals", "database"}:
-            continue
+        href_name = unquote(match.group(1)).replace("+", " ").replace("-", " ")
+        href_name = re.sub(r"\s+", " ", href_name).strip()
 
-        # The number may be inside the anchor or its nearest card container.
-        card = anchor.find_parent(["article", "li"])
-        if card is None:
-            card = anchor.find_parent("div")
-        context = card or anchor
-        text = " ".join(context.stripped_strings)
+        # IMPORTANT: read only this anchor/card. The previous implementation
+        # climbed to a large parent div and repeatedly captured the first #ID.
+        anchor_text = " ".join(anchor.stripped_strings)
+        number_match = re.search(r"#\s*(\d{1,3}[A-Z]?)\b", anchor_text.upper())
 
-        number_match = re.search(r"#\s*(\d{1,3}[A-Z]?)\b", text.upper())
+        # Some layouts put the visible number in a very small direct wrapper.
+        local = anchor
+        if not number_match:
+            parent = anchor.parent
+            if parent is not None and len(parent.find_all("a", recursive=True)) == 1:
+                local = parent
+                local_text = " ".join(parent.stripped_strings)
+                number_match = re.search(r"#\s*(\d{1,3}[A-Z]?)\b", local_text.upper())
+
         if not number_match:
             continue
         number = number_match.group(1)
 
-        # Prefer an image inside the Pal link. If layout wraps the image and
-        # text in sibling links, search the nearest card but require the alt or
-        # URL to identify this exact Pal.
+        # Prefer a visible name from this card, but never use work/element text.
+        visible_name = None
+        for node in anchor.find_all(["h2", "h3", "h4", "span", "p"]):
+            text = " ".join(node.stripped_strings).strip()
+            if not text or re.fullmatch(r"#?\d{1,3}[A-Z]?", text.upper()):
+                continue
+            if text.casefold() in {
+                "dark", "grass", "ground", "water", "fire", "ice", "neutral",
+                "electric", "dragon", "handiwork", "gathering", "lumbering",
+                "transporting", "planting", "medicine production", "watering",
+                "mining", "kindling", "farming", "cooling",
+                "generating electricity",
+            }:
+                continue
+            if re.search(r"\b(?:lv\.?|level)\s*\d+\b", text, flags=re.I):
+                continue
+            if text.casefold() == href_name.casefold() or href_name.casefold() in text.casefold():
+                visible_name = href_name
+                break
+
+        pal_name = visible_name or href_name
+        if not pal_name:
+            continue
+
+        # Only inspect images inside this link or its single-card wrapper.
         candidates = list(anchor.find_all("img"))
-        if context is not anchor:
-            candidates.extend(context.find_all("img"))
+        if local is not anchor:
+            candidates.extend(local.find_all("img"))
 
         artwork = next(
             (img for img in candidates if _is_probable_pal_artwork(img, pal_name)),
@@ -813,45 +831,68 @@ def _parse_paldeck_html(html: str) -> list[dict[str, Any]]:
         if artwork is None:
             continue
 
-        src = artwork.get("src") or artwork.get("data-src")
-        image_url = normalize_image_url(str(src))
+        src = (
+            artwork.get("data-src")
+            or artwork.get("src")
+            or artwork.get("data-lazy-src")
+        )
+        image_url = normalize_image_url(str(src or ""))
         if not image_url:
             continue
 
-        found[number] = {
+        key = (number, pal_name.casefold())
+        found[key] = {
             "key": number,
             "name": pal_name,
             "image": image_url,
+            "detail_url": absolute_href,
         }
 
-    def sort_key(pal: dict[str, Any]) -> tuple[int, str]:
-        match = re.fullmatch(r"(\d+)([A-Z]?)", pal["key"])
-        return (int(match.group(1)), match.group(2)) if match else (9999, pal["key"])
+    pals = list(found.values())
 
-    return sorted(found.values(), key=sort_key)
+    # Reject a broken parse rather than silently returning one repeated Pal.
+    unique_names = {pal["name"].casefold() for pal in pals}
+    unique_numbers = {pal["key"] for pal in pals}
+    if len(unique_names) < 20 or len(unique_numbers) < 20:
+        return []
+
+    def sort_key(pal: dict[str, Any]) -> tuple[int, str, str]:
+        m = re.fullmatch(r"(\d+)([A-Z]?)", pal["key"])
+        if not m:
+            return (9999, "", pal["name"])
+        return (int(m.group(1)), m.group(2), pal["name"])
+
+    return sorted(pals, key=sort_key)
 
 
 async def fetch_pals() -> list[dict[str, Any]]:
-    """Load the current Palworld 1.0 Pal list from Paldeck.cc."""
+    """Load the current Pal list from Paldeck, validating parser quality."""
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {
         "User-Agent": "Mozilla/5.0 PalworldDiscordBot/1.0",
-        "Accept": "text/html,application/xhtml+xml,application/json",
+        "Accept": "text/html,application/xhtml+xml",
     }
+    errors: list[str] = []
 
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(PALDECK_PALS_URL) as response:
-            response.raise_for_status()
-            html = await response.text()
+        for source_url in PALDECK_PALS_URLS:
+            try:
+                async with session.get(source_url) as response:
+                    response.raise_for_status()
+                    html = await response.text()
+                pals = _parse_paldeck_html(html)
+                if pals:
+                    log.info(
+                        "Loaded %s unique Pals from %s",
+                        len(pals),
+                        source_url,
+                    )
+                    return pals
+                errors.append(f"{source_url}: parser returned too few unique records")
+            except Exception as error:
+                errors.append(f"{source_url}: {error}")
 
-    pals = _parse_paldeck_html(html)
-    if not pals:
-        raise ValueError(
-            "Paldeck.cc returned no usable Pal records; its page layout may have changed."
-        )
-
-    log.info("Loaded %s Pals from Paldeck.cc", len(pals))
-    return pals
+    raise ValueError("Could not parse Paldeck Pal records. " + " | ".join(errors))
 
 
 PAL_DAILY_ROLL_LIMIT = 5
@@ -1944,7 +1985,14 @@ def build_pal_card_png(
     draw.text((82, 132), number_text, font=subtitle_font, fill=(245, 245, 245))
 
     pal_image = Image.open(BytesIO(pal_png)).convert("RGBA")
-    pal_image.thumbnail((700, 480), Image.Resampling.LANCZOS)
+
+    # Scale artwork UP or down to fill the art window. thumbnail() only shrinks,
+    # which made Paldeck's small optimized source icons appear tiny.
+    max_w, max_h = 700, 470
+    scale = min(max_w / max(1, pal_image.width), max_h / max(1, pal_image.height))
+    target_w = max(1, int(pal_image.width * scale))
+    target_h = max(1, int(pal_image.height * scale))
+    pal_image = pal_image.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
     # Give transparent artwork a soft backdrop and center it.
     backdrop = Image.new("RGBA", (740, 480), (255, 255, 255, 18))
@@ -2054,7 +2102,10 @@ async def pal_card(interaction: discord.Interaction) -> None:
 # Interactive seven-card Pal deck (not stored in the database)
 # ---------------------------------------------------------------------------
 PAL_PACK_COVER_URL = (
-    "https://cdn11.bigcommerce.com/s-ua4dd/images/stencil/original/products/346692/543461/Gamenerdzimagez1124__53572.1782768733.png"
+    "https://cdn.discordapp.com/attachments/928447198746804265/"
+    "1534757274117996645/dawnofpalpagosboosterpack.png"
+    "?ex=6a754998&is=6a73f818&"
+    "hm=bc75ac921c9876bb095e6b78480050c83a314a75c86a4d6ab31d4fba1c3a76ad&"
 )
 
 PAL_PACK_SIZE = 7
@@ -2238,7 +2289,7 @@ async def create_pal_deck_cards() -> list[dict[str, Any]]:
         fetch_palworld_1_0_passive_skills(),
     )
 
-    chosen_pals = random.choices(pals, k=PAL_PACK_SIZE)
+    chosen_pals = random.sample(pals, k=min(PAL_PACK_SIZE, len(pals)))
     card_specs: list[dict[str, Any]] = []
 
     for index, pal in enumerate(chosen_pals):
