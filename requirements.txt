@@ -1,6 +1,8 @@
 aiohappyeyeballs==2.6.1
 aiohttp==3.12.15
 aiosignal==1.4.0
+Pillow>=10.0
+beautifulsoup4>=4.12
 attrs==25.3.0
 audioop-lts==0.2.2; python_version >= "3.13"
 discord==2.3.2

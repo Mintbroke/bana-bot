@@ -3,7 +3,12 @@ from datetime import datetime, timezone, timedelta
 import random
 import logging, sys
 import aiohttp
+import asyncio
+from io import BytesIO
+from textwrap import wrap
 from typing import Any, Optional
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+from bs4 import BeautifulSoup
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -1614,6 +1619,344 @@ async def inventory(interaction: discord.Interaction) -> None:
         log.exception("Failed to load Pal inventory: %s", error)
         await interaction.followup.send(
             "An error occurred while loading your Pal inventory.",
+            ephemeral=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Standalone composite Pal card preview (not stored in the database)
+# ---------------------------------------------------------------------------
+PASSIVE_SKILLS_API_URL = (
+    "https://palworld.wiki.gg/api.php"
+    "?action=parse&page=Passive_Skills/List&prop=text&format=json&origin=*"
+)
+
+_passive_skill_cache: list[dict[str, Any]] | None = None
+
+
+async def fetch_palworld_1_0_passive_skills() -> list[dict[str, Any]]:
+    """Fetch and cache the passive-skill table used by Palworld 1.0."""
+    global _passive_skill_cache
+
+    if _passive_skill_cache:
+        return _passive_skill_cache
+
+    timeout = aiohttp.ClientTimeout(total=20)
+    headers = {"User-Agent": "DiscordPalBot/1.0 (passive skill card preview)"}
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(PASSIVE_SKILLS_API_URL) as response:
+            response.raise_for_status()
+            payload = await response.json(content_type=None)
+
+    html = payload["parse"]["text"]["*"]
+    soup = BeautifulSoup(html, "html.parser")
+    skills: list[dict[str, Any]] = []
+
+    # The list page's first sortable table contains Name, Pal, Rank, Description...
+    for table in soup.select("table.wikitable"):
+        headers_text = [
+            cell.get_text(" ", strip=True)
+            for cell in table.select("tr th")[:12]
+        ]
+        if "Passive Skill Name" not in headers_text and "Name" not in headers_text:
+            continue
+
+        for row in table.select("tr")[1:]:
+            cells = row.find_all(["td", "th"])
+            if len(cells) < 4:
+                continue
+
+            name = cells[0].get_text(" ", strip=True)
+            rank_text = cells[2].get_text(" ", strip=True)
+            description = cells[3].get_text(" ", strip=True)
+
+            if not name or name.lower() in {"passive skill name", "name"}:
+                continue
+
+            try:
+                rank = int(rank_text.replace("+", "").strip())
+            except ValueError:
+                rank = 0
+
+            skills.append(
+                {
+                    "name": name,
+                    "rank": rank,
+                    "description": description or "No description available.",
+                }
+            )
+
+        if skills:
+            break
+
+    # Keep unique names while preserving table order.
+    unique: dict[str, dict[str, Any]] = {}
+    for skill in skills:
+        unique.setdefault(skill["name"], skill)
+
+    _passive_skill_cache = list(unique.values())
+
+    if not _passive_skill_cache:
+        raise ValueError("The Palworld Wiki returned no passive skills.")
+
+    return _passive_skill_cache
+
+
+def roll_real_passive_traits(
+    skills: list[dict[str, Any]],
+    tier_name: str,
+) -> list[dict[str, Any]]:
+    """Roll 0-4 unique real passives, with stronger cards tending to get more."""
+    count_weights = {
+        "Normal": [45, 35, 15, 4, 1],
+        "Uncommon": [20, 40, 28, 10, 2],
+        "Rare": [8, 25, 38, 23, 6],
+        "Alpha": [4, 18, 38, 30, 10],
+        "Lucky": [0, 8, 30, 42, 20],
+        "Mythical": [0, 0, 15, 40, 45],
+    }
+    trait_count = random.choices(
+        population=[0, 1, 2, 3, 4],
+        weights=count_weights.get(tier_name, count_weights["Normal"]),
+        k=1,
+    )[0]
+
+    if trait_count == 0:
+        return []
+
+    # Rank affects selection weight but negative passives remain possible.
+    def skill_weight(skill: dict[str, Any]) -> int:
+        rank = int(skill.get("rank", 0))
+        if tier_name in {"Lucky", "Mythical"}:
+            return max(1, rank + 4)
+        if tier_name in {"Rare", "Alpha"}:
+            return max(1, rank + 3)
+        return max(1, 4 - abs(rank))
+
+    pool = list(skills)
+    selected: list[dict[str, Any]] = []
+
+    for _ in range(min(trait_count, len(pool))):
+        chosen = random.choices(
+            pool,
+            weights=[skill_weight(skill) for skill in pool],
+            k=1,
+        )[0]
+        selected.append(chosen)
+        pool.remove(chosen)
+
+    return selected
+
+
+async def download_image_bytes(url: str) -> bytes:
+    timeout = aiohttp.ClientTimeout(total=20)
+    headers = {"User-Agent": "DiscordPalBot/1.0"}
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            return await response.read()
+
+
+def _load_card_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if bold else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
+        if bold else
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ]
+
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size=size)
+        except OSError:
+            continue
+
+    return ImageFont.load_default()
+
+
+def _fit_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    max_width: int,
+) -> list[str]:
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        box = draw.textbbox((0, 0), candidate, font=font)
+        if box[2] - box[0] <= max_width:
+            current = candidate
+        else:
+            if current:
+                lines.append(current)
+            current = word
+
+    if current:
+        lines.append(current)
+
+    return lines
+
+
+def build_pal_card_png(
+    pal_png: bytes,
+    *,
+    pal_number: str,
+    pal_name: str,
+    tier_name: str,
+    tier: dict[str, Any],
+    traits: list[dict[str, Any]],
+) -> BytesIO:
+    """Render a self-contained collectible card into an in-memory PNG."""
+    width, height = 900, 1200
+
+    tier_colors = {
+        "Normal": ((67, 76, 86), (28, 33, 40)),
+        "Uncommon": ((36, 133, 76), (18, 54, 35)),
+        "Rare": ((36, 98, 180), (17, 41, 83)),
+        "Alpha": ((184, 52, 52), (73, 21, 21)),
+        "Lucky": ((224, 174, 37), (89, 60, 8)),
+        "Mythical": ((125, 67, 181), (45, 21, 75)),
+    }
+    accent, dark = tier_colors.get(tier_name, tier_colors["Normal"])
+
+    card = Image.new("RGBA", (width, height), dark + (255,))
+    draw = ImageDraw.Draw(card)
+
+    # Layered border and header/footer panels.
+    draw.rounded_rectangle((18, 18, 882, 1182), radius=42, fill=accent + (255,))
+    draw.rounded_rectangle((34, 34, 866, 1166), radius=34, fill=dark + (255,))
+    draw.rounded_rectangle((55, 55, 845, 175), radius=25, fill=accent + (235,))
+    draw.rounded_rectangle((55, 195, 845, 715), radius=30, fill=(15, 18, 24, 235))
+    draw.rounded_rectangle((55, 735, 845, 1135), radius=30, fill=(12, 15, 20, 235))
+
+    title_font = _load_card_font(48, bold=True)
+    subtitle_font = _load_card_font(28, bold=True)
+    body_font = _load_card_font(24)
+    small_font = _load_card_font(20)
+    trait_font = _load_card_font(22, bold=True)
+
+    display_name = get_pal_display_name(pal_name, tier_name)
+    draw.text((80, 72), display_name, font=title_font, fill="white")
+    number_text = f"#{pal_number}  •  {tier_name.upper()}  •  {tier['stars']}"
+    draw.text((82, 132), number_text, font=subtitle_font, fill=(245, 245, 245))
+
+    pal_image = Image.open(BytesIO(pal_png)).convert("RGBA")
+    pal_image.thumbnail((700, 480), Image.Resampling.LANCZOS)
+
+    # Give transparent artwork a soft backdrop and center it.
+    backdrop = Image.new("RGBA", (740, 480), (255, 255, 255, 18))
+    px = (740 - pal_image.width) // 2
+    py = (480 - pal_image.height) // 2
+    backdrop.alpha_composite(pal_image, (px, py))
+    card.alpha_composite(backdrop, (80, 215))
+
+    draw = ImageDraw.Draw(card)
+    draw.text((80, 760), "PASSIVE TRAITS", font=subtitle_font, fill=accent)
+
+    y = 810
+    if not traits:
+        draw.text((82, y), "No passive traits", font=body_font, fill=(215, 215, 215))
+    else:
+        rank_symbols = {-3: "▼▼▼", -2: "▼▼", -1: "▼", 0: "•", 1: "▲", 2: "▲▲", 3: "▲▲▲", 4: "◆"}
+        for trait in traits:
+            rank = int(trait.get("rank", 0))
+            symbol = rank_symbols.get(rank, f"R{rank}")
+            heading = f"{symbol}  {trait['name']}"
+            draw.text((82, y), heading, font=trait_font, fill="white")
+            y += 31
+
+            lines = _fit_text(
+                draw,
+                str(trait.get("description", "")),
+                small_font,
+                700,
+            )[:2]
+            for line in lines:
+                draw.text((110, y), line, font=small_font, fill=(205, 210, 218))
+                y += 25
+            y += 13
+
+    draw.line((80, 1082, 820, 1082), fill=accent, width=3)
+    draw.text(
+        (82, 1097),
+        "Preview only • This Pal is not added to your database",
+        font=small_font,
+        fill=(205, 210, 218),
+    )
+
+    output = BytesIO()
+    card.convert("RGB").save(output, format="PNG", optimize=True)
+    output.seek(0)
+    return output
+
+
+@bot.tree.command(
+    name="pal_card",
+    description="Generate a random Pal trading-card preview without saving it",
+    guild=guild,
+)
+async def pal_card(interaction: discord.Interaction) -> None:
+    await interaction.response.defer()
+
+    try:
+        pals, passive_skills = await asyncio.gather(
+            fetch_pals(),
+            fetch_palworld_1_0_passive_skills(),
+        )
+
+        pal = random.choice(pals)
+        pal_number = str(pal["key"])
+        pal_name = str(pal["name"])
+        image_url = normalize_image_url(str(pal["image"]))
+
+        tier_name, tier = roll_pal_tier()
+        traits = roll_real_passive_traits(passive_skills, tier_name)
+        pal_png = await download_image_bytes(image_url)
+
+        card_buffer = await asyncio.to_thread(
+            build_pal_card_png,
+            pal_png,
+            pal_number=pal_number,
+            pal_name=pal_name,
+            tier_name=tier_name,
+            tier=tier,
+            traits=traits,
+        )
+
+        filename = f"pal_card_{pal_number}_{interaction.user.id}.png"
+        file = discord.File(card_buffer, filename=filename)
+
+        embed = discord.Embed(
+            title=f"{tier['emoji']} {get_pal_display_name(pal_name, tier_name)}",
+            description=(
+                f"**Paldeck:** `#{pal_number}`\n"
+                f"**Tier:** {tier_name}\n"
+                f"**Passives:** {len(traits)}/4\n\n"
+                "This is a preview and was **not** stored."
+            ),
+            color=tier["color"],
+        )
+        embed.set_image(url=f"attachment://{filename}")
+
+        await interaction.followup.send(embed=embed, file=file)
+
+    except aiohttp.ClientResponseError as error:
+        log.exception("Pal card HTTP error: %s", error)
+        await interaction.followup.send(
+            f"Could not load card data. HTTP status: {error.status}",
+            ephemeral=True,
+        )
+    except Exception as error:
+        log.exception("Failed to generate Pal card: %s", error)
+        await interaction.followup.send(
+            "An error occurred while generating the Pal card.",
             ephemeral=True,
         )
 
