@@ -1241,7 +1241,7 @@ class PullFavoriteView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Favorite", emoji="☆", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="☆ Favorite", style=discord.ButtonStyle.secondary)
     async def favorite_button(
         self,
         interaction: discord.Interaction,
@@ -1259,8 +1259,8 @@ class PullFavoriteView(discord.ui.View):
                 "That Pal could not be found in your collection.", ephemeral=True
             )
             return
-        button.label = "Favorited" if self.is_favorite else "Favorite"
-        button.emoji = "⭐" if self.is_favorite else "☆"
+        button.label = "⭐ Favorited" if self.is_favorite else "☆ Favorite"
+        button.emoji = None
         button.style = (
             discord.ButtonStyle.success
             if self.is_favorite
@@ -1322,9 +1322,9 @@ class PalInventoryView(discord.ui.View):
         if self.selected_index is not None:
             pal = self.pals[self.selected_index]
             self.favorite_button.label = (
-                "Unfavorite" if pal.get("is_favorite") else "Favorite"
+                "⭐ Unfavorite" if pal.get("is_favorite") else "☆ Favorite"
             )
-            self.favorite_button.emoji = "⭐" if pal.get("is_favorite") else "☆"
+            self.favorite_button.emoji = None
 
     def create_current_embed(self) -> discord.Embed:
         if self.selected_index is not None:
@@ -1382,7 +1382,7 @@ class PalInventoryView(discord.ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.create_current_embed(), view=self)
 
-    @discord.ui.button(label="Favorite", emoji="☆", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="☆ Favorite", style=discord.ButtonStyle.success, row=1)
     async def favorite_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.selected_index is None:
             return
