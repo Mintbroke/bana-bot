@@ -1883,13 +1883,6 @@ def build_pal_card_png(
                 y += 25
             y += 13
 
-    draw.line((80, 1082, 820, 1082), fill=accent, width=3)
-    draw.text(
-        (82, 1097),
-        "Preview only • This Pal is not added to your database",
-        font=small_font,
-        fill=(205, 210, 218),
-    )
 
     output = BytesIO()
     card.convert("RGB").save(output, format="PNG", optimize=True)
@@ -1962,12 +1955,23 @@ async def pal_card(interaction: discord.Interaction) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Interactive five-card Pal deck preview (not stored in the database)
+# Interactive seven-card Pal deck (not stored in the database)
 # ---------------------------------------------------------------------------
+PAL_PACK_COVER_URL = (
+    "https://cdn.discordapp.com/attachments/928447198746804265/"
+    "1534757274117996645/dawnofpalpagosboosterpack.png"
+    "?ex=6a754998&is=6a73f818&"
+    "hm=bc75ac921c9876bb095e6b78480050c83a314a75c86a4d6ab31d4fba1c3a76ad&"
+)
+
+PAL_PACK_SIZE = 7
+
+
 def roll_guaranteed_two_star_tier() -> tuple[str, dict[str, Any]]:
     """Roll a tier of Uncommon (2 stars) or better."""
     eligible_names = [
-        name for name, config in PAL_TIERS.items()
+        name
+        for name, config in PAL_TIERS.items()
         if len(str(config.get("stars", ""))) >= 2
     ]
     eligible_weights = [PAL_TIERS[name]["weight"] for name in eligible_names]
@@ -1979,87 +1983,18 @@ def roll_guaranteed_two_star_tier() -> tuple[str, dict[str, Any]]:
     return tier_name, PAL_TIERS[tier_name]
 
 
-def build_pal_pack_cover_png(
-    preview_images: list[bytes],
-    *,
-    owner_name: str,
-) -> BytesIO:
-    """Create a sealed Pal deck cover using a few pulled Pal images."""
-    width, height = 900, 1200
-    card = Image.new("RGBA", (width, height), (14, 28, 44, 255))
-    draw = ImageDraw.Draw(card)
-
-    # Foil-like layered border.
-    draw.rounded_rectangle((18, 18, 882, 1182), radius=52, fill=(46, 159, 184, 255))
-    draw.rounded_rectangle((31, 31, 869, 1169), radius=44, fill=(11, 25, 43, 255))
-    draw.rounded_rectangle((48, 48, 852, 1152), radius=36, fill=(19, 48, 68, 255))
-
-    # Decorative diagonal bands.
-    for offset in range(-500, 1200, 105):
-        draw.line((offset, 1120, offset + 700, 80), fill=(55, 158, 183, 65), width=26)
-
-    # Dimmed Pal artwork collage.
-    positions = [(55, 300), (315, 260), (560, 320)]
-    sizes = [(330, 420), (340, 470), (300, 400)]
-    for raw, position, size in zip(preview_images[:3], positions, sizes):
-        try:
-            image = Image.open(BytesIO(raw)).convert("RGBA")
-            image.thumbnail(size, Image.Resampling.LANCZOS)
-            alpha = image.getchannel("A").point(lambda value: int(value * 0.46))
-            image.putalpha(alpha)
-            card.alpha_composite(image, position)
-        except Exception:
-            continue
-
-    draw = ImageDraw.Draw(card)
-    title_font = _load_card_font(78, bold=True)
-    subtitle_font = _load_card_font(35, bold=True)
-    body_font = _load_card_font(27)
-    small_font = _load_card_font(22)
-
-    title = "PAL DECK"
-    title_box = draw.textbbox((0, 0), title, font=title_font)
-    draw.text(((width - (title_box[2] - title_box[0])) / 2, 105), title, font=title_font, fill="white")
-
-    subtitle = "FRIEND PACK"
-    subtitle_box = draw.textbbox((0, 0), subtitle, font=subtitle_font)
-    draw.text(((width - (subtitle_box[2] - subtitle_box[0])) / 2, 205), subtitle, font=subtitle_font, fill=(157, 231, 239))
-
-    draw.rounded_rectangle((120, 770, 780, 1015), radius=30, fill=(8, 21, 34, 220), outline=(113, 220, 231), width=4)
-    lines = [
-        "5 RANDOM PAL CARDS",
-        "Final card guaranteed 2 stars or higher",
-        f"Prepared for {owner_name}",
-    ]
-    y = 815
-    for index, line in enumerate(lines):
-        font = subtitle_font if index == 0 else body_font
-        box = draw.textbbox((0, 0), line, font=font)
-        draw.text(((width - (box[2] - box[0])) / 2, y), line, font=font, fill="white")
-        y += 68 if index == 0 else 55
-
-    draw.text((75, 1090), "Press Open Pack to reveal your cards", font=small_font, fill=(190, 225, 232))
-
-    output = BytesIO()
-    card.convert("RGB").save(output, format="PNG", optimize=True)
-    output.seek(0)
-    return output
-
-
 class PalDeckView(discord.ui.View):
-    """Open and browse a fixed five-card preview pack."""
+    """Open and browse one fixed seven-card Pal pack."""
 
     def __init__(
         self,
         *,
         owner_id: int,
         cards: list[dict[str, Any]],
-        cover_png: bytes,
     ) -> None:
         super().__init__(timeout=300)
         self.owner_id = owner_id
         self.cards = cards
-        self.cover_png = cover_png
         self.current_index = 0
         self.opened = False
         self._sync_buttons()
@@ -2077,22 +2012,22 @@ class PalDeckView(discord.ui.View):
         self.open_button.disabled = self.opened
         self.open_button.label = "Pack Opened" if self.opened else "Open Pack"
         self.back_button.disabled = not self.opened or self.current_index == 0
-        self.next_button.disabled = not self.opened or self.current_index >= len(self.cards) - 1
+        self.next_button.disabled = (
+            not self.opened or self.current_index >= len(self.cards) - 1
+        )
 
-    def _cover_message(self) -> tuple[discord.Embed, discord.File]:
-        filename = f"pal_deck_cover_{self.owner_id}.png"
-        file = discord.File(BytesIO(self.cover_png), filename=filename)
+    def _cover_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="Sealed Pal Deck",
+            title="Dawn of Palpagos Booster Pack",
             description=(
-                "Contains **5 cards**.\n"
-                "The fifth card is guaranteed to be **2 stars or higher**.\n\n"
-                "This preview does not save cards or consume daily rolls."
+                f"Contains **{PAL_PACK_SIZE} Pal cards**.\n"
+                f"Card {PAL_PACK_SIZE} is guaranteed to be **2 stars or higher**.\n\n"
+                "Press **Open Pack** to reveal the first card."
             ),
             color=discord.Color.teal(),
         )
-        embed.set_image(url=f"attachment://{filename}")
-        return embed, file
+        embed.set_image(url=PAL_PACK_COVER_URL)
+        return embed
 
     def _card_message(self) -> tuple[discord.Embed, discord.File]:
         card = self.cards[self.current_index]
@@ -2100,25 +2035,32 @@ class PalDeckView(discord.ui.View):
         file = discord.File(BytesIO(card["png"]), filename=filename)
         guaranteed = self.current_index == len(self.cards) - 1
 
+        description = (
+            f"**Paldeck:** `#{card['pal_number']}`\n"
+            f"**Tier:** {card['tier_name']} {card['tier']['stars']}\n"
+            f"**Passives:** {len(card['traits'])}/4"
+        )
+        if guaranteed:
+            description += "\n**Guaranteed slot:** 2 stars or higher"
+        description += "\n\nUse **Back** and **Next** to browse this pack."
+
         embed = discord.Embed(
             title=(
                 f"Card {self.current_index + 1} of {len(self.cards)} — "
-                f"{card['tier']['emoji']} {get_pal_display_name(card['pal_name'], card['tier_name'])}"
+                f"{card['tier']['emoji']} "
+                f"{get_pal_display_name(card['pal_name'], card['tier_name'])}"
             ),
-            description=(
-                f"**Paldeck:** `#{card['pal_number']}`\n"
-                f"**Tier:** {card['tier_name']} {card['tier']['stars']}\n"
-                f"**Passives:** {len(card['traits'])}/4"
-                + ("\n**Guaranteed slot:** 2 stars or higher" if guaranteed else "")
-                + "\n\nUse **Back** and **Next** to browse this pack."
-            ),
+            description=description,
             color=card["tier"]["color"],
         )
         embed.set_image(url=f"attachment://{filename}")
-        embed.set_footer(text="Preview only • Nothing from this pack is stored")
         return embed, file
 
-    @discord.ui.button(label="Open Pack", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(
+        label="Open Pack",
+        style=discord.ButtonStyle.success,
+        row=0,
+    )
     async def open_button(
         self,
         interaction: discord.Interaction,
@@ -2134,7 +2076,11 @@ class PalDeckView(discord.ui.View):
             view=self,
         )
 
-    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(
+        label="Back",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
     async def back_button(
         self,
         interaction: discord.Interaction,
@@ -2150,7 +2096,11 @@ class PalDeckView(discord.ui.View):
             view=self,
         )
 
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(
+        label="Next",
+        style=discord.ButtonStyle.primary,
+        row=0,
+    )
     async def next_button(
         self,
         interaction: discord.Interaction,
@@ -2172,18 +2122,18 @@ class PalDeckView(discord.ui.View):
                 item.disabled = True
 
 
-async def create_pal_deck_cards(owner_name: str) -> tuple[list[dict[str, Any]], bytes]:
-    """Generate five fixed preview cards and a pack cover."""
+async def create_pal_deck_cards() -> list[dict[str, Any]]:
+    """Generate seven fixed cards; the seventh is guaranteed 2 stars or better."""
     pals, passive_skills = await asyncio.gather(
         fetch_pals(),
         fetch_palworld_1_0_passive_skills(),
     )
 
-    chosen_pals = random.choices(pals, k=5)
+    chosen_pals = random.choices(pals, k=PAL_PACK_SIZE)
     card_specs: list[dict[str, Any]] = []
 
     for index, pal in enumerate(chosen_pals):
-        if index == 4:
+        if index == PAL_PACK_SIZE - 1:
             tier_name, tier = roll_guaranteed_two_star_tier()
         else:
             tier_name, tier = roll_pal_tier()
@@ -2195,7 +2145,10 @@ async def create_pal_deck_cards(owner_name: str) -> tuple[list[dict[str, Any]], 
                 "image_url": normalize_image_url(str(pal["image"])),
                 "tier_name": tier_name,
                 "tier": tier,
-                "traits": roll_real_passive_traits(passive_skills, tier_name),
+                "traits": roll_real_passive_traits(
+                    passive_skills,
+                    tier_name,
+                ),
             }
         )
 
@@ -2221,34 +2174,26 @@ async def create_pal_deck_cards(owner_name: str) -> tuple[list[dict[str, Any]], 
     for spec, rendered in zip(card_specs, rendered_cards):
         spec["png"] = rendered.getvalue()
 
-    cover_buffer = await asyncio.to_thread(
-        build_pal_pack_cover_png,
-        list(pal_pngs[:3]),
-        owner_name=owner_name,
-    )
-    return card_specs, cover_buffer.getvalue()
+    return card_specs
 
 
 @bot.tree.command(
     name="open_pal_deck",
-    description="Open a five-card Pal deck preview",
+    description="Open a seven-card Dawn of Palpagos booster pack",
     guild=guild,
 )
 async def open_pal_deck(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
 
     try:
-        cards, cover_png = await create_pal_deck_cards(interaction.user.display_name)
+        cards = await create_pal_deck_cards()
         view = PalDeckView(
             owner_id=interaction.user.id,
             cards=cards,
-            cover_png=cover_png,
         )
 
-        embed, file = view._cover_message()
         await interaction.followup.send(
-            embed=embed,
-            file=file,
+            embed=view._cover_embed(),
             view=view,
         )
 
