@@ -550,6 +550,115 @@ IMAGE_BASE_URL = (
 
 import aiohttp
 
+PAL_TIERS = {
+    "Normal": {
+        "weight": 7000,
+        "emoji": "⚪",
+        "stars": "★",
+        "color": discord.Color.light_grey(),
+        "border": "A common Pal",
+        "bonus": "None",
+    },
+    "Uncommon": {
+        "weight": 2000,
+        "emoji": "🟢",
+        "stars": "★★",
+        "color": discord.Color.green(),
+        "border": "An uncommon Pal",
+        "bonus": "+5% base stats",
+    },
+    "Rare": {
+        "weight": 750,
+        "emoji": "🔵",
+        "stars": "★★★",
+        "color": discord.Color.blue(),
+        "border": "A rare Pal",
+        "bonus": "+10% base stats",
+    },
+    "Alpha": {
+        "weight": 200,
+        "emoji": "🔴",
+        "stars": "★★★★",
+        "color": discord.Color.red(),
+        "border": "An enormous Alpha Pal",
+        "bonus": "+20% HP",
+    },
+    "Lucky": {
+        "weight": 45,
+        "emoji": "✨",
+        "stars": "★★★★★",
+        "color": discord.Color.gold(),
+        "border": "A sparkling Lucky Pal",
+        "bonus": "+15% all stats",
+    },
+    "Mythical": {
+        "weight": 5,
+        "emoji": "🌌",
+        "stars": "★★★★★★",
+        "color": discord.Color.purple(),
+        "border": "An extremely rare Mythical Pal",
+        "bonus": "+30% all stats",
+    },
+}
+def roll_pal_tier():
+    tier_names = list(PAL_TIERS.keys())
+    tier_weights = [
+        PAL_TIERS[tier_name]["weight"]
+        for tier_name in tier_names
+    ]
+
+    tier_name = random.choices(
+        tier_names,
+        weights=tier_weights,
+        k=1
+    )[0]
+
+    return tier_name, PAL_TIERS[tier_name]
+
+
+def get_tier_effects(tier_name):
+    effects = {
+        "Normal": {
+            "hp_multiplier": 1.00,
+            "attack_multiplier": 1.00,
+            "defense_multiplier": 1.00,
+            "size": "Normal",
+        },
+        "Uncommon": {
+            "hp_multiplier": 1.05,
+            "attack_multiplier": 1.05,
+            "defense_multiplier": 1.05,
+            "size": "Normal",
+        },
+        "Rare": {
+            "hp_multiplier": 1.10,
+            "attack_multiplier": 1.10,
+            "defense_multiplier": 1.10,
+            "size": "Normal",
+        },
+        "Alpha": {
+            "hp_multiplier": 1.20,
+            "attack_multiplier": 1.05,
+            "defense_multiplier": 1.10,
+            "size": "Large",
+        },
+        "Lucky": {
+            "hp_multiplier": 1.15,
+            "attack_multiplier": 1.15,
+            "defense_multiplier": 1.15,
+            "size": "Large",
+        },
+        "Mythical": {
+            "hp_multiplier": 1.30,
+            "attack_multiplier": 1.30,
+            "defense_multiplier": 1.30,
+            "size": "Enormous",
+        },
+    }
+
+    return effects[tier_name]
+
+
 @bot.tree.command(name="test2", guild=guild)
 async def random_pal(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -559,38 +668,143 @@ async def random_pal(interaction: discord.Interaction):
             async with session.get(PALS_JSON_URL) as response:
                 response.raise_for_status()
 
-                # Ignore GitHub's text/plain Content-Type header.
+                # GitHub returns JSON files as text/plain.
                 pals = await response.json(content_type=None)
+
+        if not isinstance(pals, list) or not pals:
+            await interaction.followup.send(
+                "The Paldeck returned no valid Pals."
+            )
+            return
 
         pal = random.choice(pals)
 
         pal_number = str(pal["key"])
-        pal_name = pal["name"]
-        image_path = pal["image"]
+        pal_name = str(pal["name"])
+        image_path = str(pal["image"])
 
-        image_url = f"{IMAGE_BASE_URL}{image_path}"
+        if image_path.startswith("http"):
+            image_url = image_path
+        else:
+            image_url = f"{IMAGE_BASE_URL}{image_path}"
+
+        tier_name, tier = roll_pal_tier()
+        effects = get_tier_effects(tier_name)
+
+        display_name = pal_name
+
+        if tier_name == "Alpha":
+            display_name = f"Alpha {pal_name}"
+        elif tier_name == "Lucky":
+            display_name = f"Lucky {pal_name}"
+        elif tier_name == "Mythical":
+            display_name = f"Mythical {pal_name}"
 
         embed = discord.Embed(
-            title=pal_name,
-            description=f"**Paldeck Number:** #{pal_number}",
-            color=discord.Color.blurple()
+            title=(
+                f"{tier['emoji']} {display_name} "
+                f"{tier['emoji']}"
+            ),
+            description=(
+                f"## {tier['stars']}\n"
+                f"*{tier['border']} has appeared!*\n\n"
+                f"**Paldeck Number:** `#{pal_number}`"
+            ),
+            color=tier["color"],
         )
+
         embed.set_image(url=image_url)
-        embed.set_footer(text="Random Pal")
+
+        embed.add_field(
+            name="Rarity",
+            value=f"{tier['emoji']} **{tier_name}**",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Size",
+            value=effects["size"],
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Tier Bonus",
+            value=tier["bonus"],
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Stat Multipliers",
+            value=(
+                f"❤️ HP: **x{effects['hp_multiplier']:.2f}**\n"
+                f"⚔️ Attack: **x{effects['attack_multiplier']:.2f}**\n"
+                f"🛡️ Defense: **x{effects['defense_multiplier']:.2f}**"
+            ),
+            inline=False,
+        )
+
+        if tier_name == "Normal":
+            embed.set_footer(
+                text="A regular Pal joined your collection."
+            )
+
+        elif tier_name == "Uncommon":
+            embed.set_footer(
+                text="Uncommon Draw • A little stronger than usual"
+            )
+
+        elif tier_name == "Rare":
+            embed.set_footer(
+                text="Rare Draw • A valuable Pal"
+            )
+
+        elif tier_name == "Alpha":
+            embed.set_footer(
+                text="ALPHA DRAW • Massive size and increased HP"
+            )
+
+        elif tier_name == "Lucky":
+            embed.set_footer(
+                text="LUCKY DRAW ✨ • An exceptionally rare encounter"
+            )
+
+        elif tier_name == "Mythical":
+            embed.set_footer(
+                text="MYTHICAL DRAW 🌌 • A legendary collector's prize"
+            )
 
         await interaction.followup.send(embed=embed)
 
     except aiohttp.ClientResponseError as error:
         log.exception("Paldeck HTTP error: %s", error)
+
         await interaction.followup.send(
             f"Could not load the Paldeck. HTTP status: {error.status}"
         )
 
-    except (aiohttp.ClientError, KeyError, ValueError, TypeError) as error:
-        log.exception("Failed to load random Pal: %s", error)
-        await interaction.followup.send(
-            "An error occurred while loading the Paldeck."
-        )
+    except (
+        aiohttp.ClientError,
+        KeyError,
+        ValueError,
+        TypeError
+    ) as error:
+        log.exception("Failed to draw a random Pal: %s", error)
+
+    announcement = None
+
+    if tier_name == "Alpha":
+        announcement = "🔴 **ALPHA PAL ENCOUNTER!**"
+
+    elif tier_name == "Lucky":
+        announcement = "✨ **A LUCKY PAL HAS APPEARED!** ✨"
+
+    elif tier_name == "Mythical":
+        announcement = "🌌 **MYTHICAL PULL! INCREDIBLE LUCK!** 🌌"
+
+    await interaction.followup.send(
+        content=announcement,
+        embed=embed
+    )
 
 @bot.command()
 async def dbtest(ctx):
