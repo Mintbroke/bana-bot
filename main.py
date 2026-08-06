@@ -4,7 +4,7 @@ import random
 import logging, sys
 import json
 import re
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 import aiohttp
 import asyncio
 from io import BytesIO
@@ -733,150 +733,358 @@ def _extract_best_img_src(image: Any) -> str:
     return ""
 
 
-def _parse_palworldpals_html(html: str) -> list[dict[str, Any]]:
-    """Parse PalworldPals' complete static v1.0.1 Paldeck page."""
-    soup = BeautifulSoup(html, "html.parser")
-    found: dict[tuple[str, str], dict[str, Any]] = {}
+# Bundled v1.0.2 numbered Pal roster. This avoids JavaScript-only pages,
+# anti-bot blocks, and incomplete lazy-loaded HTML on Railway.
+LOCAL_PAL_ROSTER_DATA = r"""
+1|Lamball
+2|Cattiva
+3|Chikipi
+4|Lifmunk
+5|Fuack
+5B|Fuack Ignis
+6|Vixy
+7|Celaray
+7B|Celaray Lux
+8|Cremis
+9|Croajiro
+9B|Croajiro Noct
+10|Herbil
+11|Teafant
+12|Gumoss
+13|Pupperai
+14|Clovee
+15|Jolthog
+15B|Jolthog Cryst
+16|Depresso
+17|Pengullet
+17B|Pengullet Lux
+18|Penking
+18B|Penking Lux
+19|Hoocrates
+20|Melpaca
+21|Kingpaca
+21B|Kingpaca Cryst
+22|Daedream
+23|Tanzee
+23B|Tanzee Ignis
+24|Nox
+25|Flambelle
+26|Rooby
+27|Mau
+27B|Mau Cryst
+28|Rushoar
+29|Foxparks
+29B|Foxparks Cryst
+30|Killamari
+30B|Killamari Primo
+31|Fuddler
+32|Eikthyrdeer
+32B|Eikthyrdeer Terra
+33|Direhowl
+34|Caprity
+34B|Caprity Noct
+35|Swee
+36|Sweepa
+37|Turtacle
+37B|Turtacle Terra
+38|Hangyu
+38B|Hangyu Cryst
+39|Woolipop
+39B|Woolipop Terra
+40|Mozzarina
+41|Azurobe
+41B|Azurobe Cryst
+42|Sparkit
+43|Kelpsea
+43B|Kelpsea Ignis
+44|Ribbuny
+44B|Ribbuny Botan
+45|Jelliette
+46|Jellroy
+47|Amione
+48|Gloopie
+48B|Gloopie Primo
+49|Galeclaw
+50|Wispaw
+51|Nitewing
+52|Tombat
+53|Tocotoco
+54|Univolt
+54B|Univolt Cryst
+55|Gobfin
+55B|Gobfin Ignis
+56|Loupmoon
+56B|Loupmoon Cryst
+57|Cawgnito
+58|Arsox
+59|Muffly
+60|Bristla
+61|Cinnamoth
+62|Puffolt
+63|Elphidran
+63B|Elphidran Aqua
+64|Vanwyrm
+64B|Vanwyrm Cryst
+65|Felbat
+66|Vaelet
+67|Beegarde
+68|Elizabee
+69|Lovander
+70|Grintale
+71|Tarantriss
+72|Polapup
+72B|Polapup Terra
+73|Leezpunk
+73B|Leezpunk Ignis
+74|Gorirat
+74B|Gorirat Terra
+75|Surfent
+75B|Surfent Terra
+76|Robinquill
+76B|Robinquill Terra
+77|Flopie
+78|Wixen
+78B|Wixen Noct
+79|Katress
+79B|Katress Ignis
+80|Helzephyr
+80B|Helzephyr Lux
+81|Elgrove
+81B|Elgrove Cryst
+82|Lunaris
+83|Fenglope
+83B|Fenglope Lux
+84|Dinossom
+84B|Dinossom Lux
+85|Bushi
+85B|Bushi Noct
+86|Munchill
+87|Mammorest
+87B|Mammorest Cryst
+88|Finsider
+88B|Finsider Ignis
+89|Petallia
+89B|Petallia Ignis
+90|Leafan
+91|Incineram
+91B|Incineram Noct
+92|Dazzi
+92B|Dazzi Noct
+93|Pyrin
+93B|Pyrin Noct
+94|Relaxaurus
+94B|Relaxaurus Lux
+95|Foxcicle
+96|Beakon
+96B|Beakon Cryst
+97|Ghangler
+97B|Ghangler Ignis
+98|Rayhound
+98B|Rayhound Cryst
+99|Menasting
+99B|Menasting Terra
+100|Needoll
+100B|Needoll Noct
+101|Reindrix
+102|Mossanda
+102B|Mossanda Lux
+103|Chillet
+103B|Chillet Ignis
+104|Ragnahawk
+105|Moldron
+105B|Moldron Cryst
+106|Palumba
+107|Digtoise
+108|Broncherry
+108B|Broncherry Aqua
+109|Dumud
+109B|Dumud Gild
+110|Braloha
+111|Kitsun
+111B|Kitsun Noct
+112|Blazehowl
+112B|Blazehowl Noct
+113|Warsect
+113B|Warsect Terra
+114|Frostplume
+115|Majex
+116|Sibelyx
+116B|Sibelyx Primo
+117|Maraith
+118|Shroomer
+118B|Shroomer Noct
+119|Icelyn
+120|Gildra
+121|Jormuntide
+121B|Jormuntide Ignis
+122|Suzaku
+122B|Suzaku Aqua
+123|Dazemu
+124|Quivern
+124B|Quivern Botan
+125|Lullu
+126|Kikit
+127|Yakumo
+128|Skutlass
+128B|Skutlass Ignis
+129|Reptyro
+129B|Reptyro Cryst
+130|Starryon
+130B|Starryon Primo
+131|Pierdon
+131B|Pierdon Cryst
+132|Cryolinx
+132B|Cryolinx Terra
+133|Snugloo
+134|Wumpo
+134B|Wumpo Botan
+135|Sootseer
+136|Carnibora
+137|Blazamut
+137B|Blazamut Ryu
+138|Dualith
+138B|Dualith Noct
+139|Anubis
+140|Sekhmet
+141|Prixter
+141B|Prixter Lux
+142|Tetroise
+142B|Tetroise Primo
+143|Nyafia
+144|Mimog
+145|Xenovader
+146|Xenogard
+147|Prunelia
+148|Nitemary
+148B|Nitemary Botan
+149|Smokie
+149B|Smokie Cryst
+150|Omascul
+151|Whalaska
+151B|Whalaska Ignis
+152|Verdash
+153|Splatterina
+154|Gildane
+155|Dogen
+156|Bulldosu
+157|Celesdir
+157B|Celesdir Noct
+158|Astegon
+159|Knocklem
+159B|Knocklem Ignis
+160|Silvegis
+161|Azurmane
+162|Valentail
+163|Snock
+163B|Snock Lux
+164|Souffline
+165|Lapiron
+166|Hoodle
+167|Slowatt
+168|Bakemi
+169|Solmora
+169B|Solmora Lux
+170|Lapure
+171|Eidrolon
+171B|Eidrolon Ignis
+172|Dynamoff
+173|Tropicaw
+174|Flaracle
+175|Ophydia
+176|Dupin
+177|Roujay
+178|Venusa
+179|Mycora
+180|Loomen
+181|Wistella
+182|Solenne
+183|Renjishi
+184|Aegidron
+185|Grizzbolt
+186|Lyleen
+186B|Lyleen Noct
+187|Orserk
+188|Faleris
+188B|Faleris Aqua
+189|Shadowbeak
+190|Selyne
+191|Bastigor
+192|Shaolong
+193|Silvance
+194|Dandilord
+195|Bellanoir
+195B|Bellanoir Libero
+196|Xenolord
+197|Hartalis
+198|Paladius
+199|Necromus
+200|Frostallion
+200B|Frostallion Noct
+201|Neptilius
+202|Jetragon
+203|Panthalus
+204|Astralym
+"""
 
-    # Each real Pal links to a detail page below /pals/<slug>. Using the
-    # detail-link boundary prevents work icons, filters, and navigation labels
-    # from being mistaken for Pal records.
-    for link in soup.find_all("a", href=True):
-        href = str(link.get("href") or "").strip()
-        parsed_href = urlparse(urljoin(PAL_DATA_BASE_URL, href))
-        path = parsed_href.path.rstrip("/")
 
-        if not path.startswith("/pals/") or path == "/pals":
+def _build_local_pal_roster() -> list[dict[str, Any]]:
+    pals: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for raw_line in LOCAL_PAL_ROSTER_DATA.splitlines():
+        line = raw_line.strip()
+        if not line or "|" not in line:
             continue
 
-        local_text = " ".join(link.stripped_strings)
-        if not local_text:
-            continue
+        number, name = (part.strip() for part in line.split("|", 1))
+        if not re.fullmatch(r"\d{1,3}[A-Z]?", number):
+            raise ValueError(f"Invalid bundled Paldeck number: {number!r}")
+        if not name or number in seen:
+            raise ValueError(f"Invalid or duplicate bundled Pal: {line!r}")
 
-        # Typical card text is "Lamball #1 Neutral" or "Fuack Ignis #5B ...".
-        number_match = re.search(r"#\s*(\d{1,3}[A-Za-z]?)\b", local_text)
-        if not number_match:
-            # Some layouts place the number in the immediate parent.
-            parent_text = " ".join(link.parent.stripped_strings) if link.parent else ""
-            number_match = re.search(r"#\s*(\d{1,3}[A-Za-z]?)\b", parent_text)
-            local_text = parent_text or local_text
-        if not number_match:
-            continue
-
-        number = number_match.group(1).upper()
-        prefix = local_text[: number_match.start()].strip(" -–—|\n\t")
-
-        image = link.find("img")
-        if image is None and link.parent is not None:
-            image = link.parent.find("img")
-
-        alt_name = ""
-        if image is not None:
-            alt_name = re.sub(r"\s+", " ", str(image.get("alt") or "")).strip()
-            alt_name = re.sub(r"\s+(?:pal|image|icon|menu artwork)$", "", alt_name, flags=re.I)
-
-        # Prefer the visible name before #number; use image alt as fallback.
-        pal_name = re.sub(r"\s+", " ", prefix).strip()
-        if not pal_name or len(pal_name) > 60:
-            pal_name = alt_name
-
-        # Strip common site/card prefixes if present.
-        pal_name = re.sub(r"^(?:view|open|pal)\s+", "", pal_name, flags=re.I).strip()
-        if not pal_name or pal_name.casefold() in {
-            "pals", "all pals", "paldeck", "filter", "search"
-        }:
-            continue
-
-        image_src = _extract_best_img_src(image) if image is not None else ""
-        image_url = normalize_image_url(image_src)
-        if not image_url:
-            continue
-
-        # Reject obvious UI/work/element icons.
-        combined_image_text = f"{image_src} {alt_name}".casefold()
-        if any(token in combined_image_text for token in (
-            "work-suitability", "work_suitability", "element-icon",
-            "/icons/", "filter", "logo", "favicon"
-        )):
-            continue
-
-        detail_url = urljoin(PAL_DATA_BASE_URL, href)
-        key = (number, pal_name.casefold())
-        found[key] = {
+        seen.add(number)
+        encoded_name = quote(name, safe="")
+        slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+        pals.append({
             "key": number,
-            "name": pal_name,
-            "image": image_url,
-            "detail_url": detail_url,
-        }
+            "name": name,
+            "image": f"https://palworldpals.com/media/pal/{encoded_name}.png",
+            "detail_url": f"https://palworldpals.com/pal/{slug}",
+        })
 
-    pals = list(found.values())
-    unique_names = {pal["name"].casefold() for pal in pals}
-    unique_numbers = {pal["key"] for pal in pals}
     base_numbers = [
         int(match.group(1))
         for pal in pals
         if (match := re.fullmatch(r"(\d+)([A-Z]?)", pal["key"]))
     ]
-    highest_base_number = max(base_numbers, default=0)
+    highest = max(base_numbers, default=0)
 
-    if (
-        len(pals) < MIN_EXPECTED_PAL_RECORDS
-        or len(unique_names) < MIN_EXPECTED_PAL_RECORDS
-        or len(unique_numbers) < MIN_EXPECTED_PAL_RECORDS
-        or highest_base_number < MIN_EXPECTED_MAX_BASE_NUMBER
-    ):
+    if len(pals) < 280 or highest < 204:
         raise ValueError(
-            "Incomplete PalworldPals parse: "
-            f"records={len(pals)}, names={len(unique_names)}, "
-            f"numbers={len(unique_numbers)}, max={highest_base_number}"
+            f"Bundled Pal roster is incomplete: records={len(pals)}, max={highest}"
         )
 
-    def sort_key(pal: dict[str, Any]) -> tuple[int, str, str]:
-        match = re.fullmatch(r"(\d+)([A-Z]?)", pal["key"])
-        if not match:
-            return (9999, "", pal["name"])
-        return (int(match.group(1)), match.group(2), pal["name"])
-
-    return sorted(pals, key=sort_key)
+    return pals
 
 
 async def fetch_pals(*, force_refresh: bool = False) -> list[dict[str, Any]]:
-    """Load and cache the complete current PalworldPals roster."""
+    """Return the bundled complete numbered roster without a network scrape."""
     global _PALS_CACHE
 
-    if _PALS_CACHE is not None and not force_refresh:
-        return _PALS_CACHE
+    if _PALS_CACHE is None or force_refresh:
+        _PALS_CACHE = _build_local_pal_roster()
+        highest = max(
+            int(match.group(1))
+            for pal in _PALS_CACHE
+            if (match := re.fullmatch(r"(\d+)([A-Z]?)", pal["key"]))
+        )
+        log.info(
+            "Loaded bundled Pal roster: %s records; highest base number #%s",
+            len(_PALS_CACHE),
+            highest,
+        )
 
-    timeout = aiohttp.ClientTimeout(total=45)
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-    }
-
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(PAL_DATA_URL) as response:
-            response.raise_for_status()
-            html = await response.text()
-
-    pals = _parse_palworldpals_html(html)
-    highest = max(
-        int(match.group(1))
-        for pal in pals
-        if (match := re.fullmatch(r"(\d+)([A-Z]?)", pal["key"]))
-    )
-    log.info(
-        "Loaded complete PalworldPals roster: %s records; highest base number #%s",
-        len(pals),
-        highest,
-    )
-    _PALS_CACHE = pals
-    return pals
+    return _PALS_CACHE
 
 
 PAL_DAILY_ROLL_LIMIT = 5
