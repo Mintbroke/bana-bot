@@ -557,17 +557,14 @@ async def random_pal(interaction: discord.Interaction):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(PALS_JSON_URL) as response:
-                if response.status != 200:
-                    await interaction.followup.send(
-                        "Could not load the Paldeck data."
-                    )
-                    return
+                response.raise_for_status()
 
-                pals = await response.json()
+                # Ignore GitHub's text/plain Content-Type header.
+                pals = await response.json(content_type=None)
 
         pal = random.choice(pals)
 
-        pal_number = pal["key"]
+        pal_number = str(pal["key"])
         pal_name = pal["name"]
         image_path = pal["image"]
 
@@ -578,15 +575,19 @@ async def random_pal(interaction: discord.Interaction):
             description=f"**Paldeck Number:** #{pal_number}",
             color=discord.Color.blurple()
         )
-
         embed.set_image(url=image_url)
         embed.set_footer(text="Random Pal")
 
         await interaction.followup.send(embed=embed)
 
-    except (aiohttp.ClientError, KeyError, ValueError) as error:
-        log.exception("Failed to load random Pal: %s", error)
+    except aiohttp.ClientResponseError as error:
+        log.exception("Paldeck HTTP error: %s", error)
+        await interaction.followup.send(
+            f"Could not load the Paldeck. HTTP status: {error.status}"
+        )
 
+    except (aiohttp.ClientError, KeyError, ValueError, TypeError) as error:
+        log.exception("Failed to load random Pal: %s", error)
         await interaction.followup.send(
             "An error occurred while loading the Paldeck."
         )
