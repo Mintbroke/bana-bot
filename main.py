@@ -538,46 +538,58 @@ async def cats(interaction: discord.Interaction):
 async def test(interaction: discord.Interaction):
     await interaction.response.send_message("Hello World!")
 
+PALS_JSON_URL = (
+    "https://raw.githubusercontent.com/mlg404/"
+    "palworld-paldex-api/main/src/pals.json"
+)
+
+IMAGE_BASE_URL = (
+    "https://raw.githubusercontent.com/mlg404/"
+    "palworld-paldex-api/main"
+)
+
+import aiohttp
+
 @bot.tree.command(name="test2", guild=guild)
-async def test2(interaction: discord.Interaction, number: str):
-    # Validate format: exactly 3 digits
-    if not (len(number) == 3 and number.isdigit()):
-        await interaction.response.send_message(
-            "Please enter a 3-digit Paldeck number (e.g. 001, 025, 085).",
-            ephemeral=True
+async def random_pal(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(PALS_JSON_URL) as response:
+                if response.status != 200:
+                    await interaction.followup.send(
+                        "Could not load the Paldeck data."
+                    )
+                    return
+
+                pals = await response.json()
+
+        pal = random.choice(pals)
+
+        pal_number = pal["key"]
+        pal_name = pal["name"]
+        image_path = pal["image"]
+
+        image_url = f"{IMAGE_BASE_URL}{image_path}"
+
+        embed = discord.Embed(
+            title=pal_name,
+            description=f"**Paldeck Number:** #{pal_number}",
+            color=discord.Color.blurple()
         )
-        return
 
-    image_url = f"https://raw.githubusercontent.com/mlg404/palworld-paldex-api/main/public/images/paldeck/{number}.png"
+        embed.set_image(url=image_url)
+        embed.set_footer(text="Random Pal")
 
-    embed = discord.Embed(
-        title=f"Pal #{number}",
-        color=discord.Color.blurple()
-    )
-    embed.set_image(url=image_url)
+        await interaction.followup.send(embed=embed)
 
-    await interaction.response.send_message(embed=embed)
+    except (aiohttp.ClientError, KeyError, ValueError) as error:
+        log.exception("Failed to load random Pal: %s", error)
 
-@bot.tree.command(name="pal", description="Show a Pal by Paldeck number", guild=guild)
-@app_commands.describe(number="Paldeck number (e.g. 001, 025, 085)")
-async def pal(interaction: discord.Interaction, number: str):
-    # Validate format: exactly 3 digits
-    if not (len(number) == 3 and number.isdigit()):
-        await interaction.response.send_message(
-            "Please enter a 3-digit Paldeck number (e.g. 001, 025, 085).",
-            ephemeral=True
+        await interaction.followup.send(
+            "An error occurred while loading the Paldeck."
         )
-        return
-
-    image_url = f"https://raw.githubusercontent.com/mlg404/palworld-paldex-api/main/public/images/paldeck/{number}.png"
-
-    embed = discord.Embed(
-        title=f"Pal #{number}",
-        color=discord.Color.blurple()
-    )
-    embed.set_image(url=image_url)
-
-    await interaction.response.send_message(embed=embed)
 
 @bot.command()
 async def dbtest(ctx):
