@@ -2078,14 +2078,124 @@ def roll_real_passive_traits(
     return selected
 
 
+def _make_missing_pal_art(pal_name: str, pal_number: str = "?") -> bytes:
+    """Create usable artwork when an external Pal image cannot be found."""
+    width, height = 900, 700
+    image = Image.new("RGBA", (width, height), (24, 29, 38, 255))
+    draw = ImageDraw.Draw(image)
+
+    # Simple large silhouette so the final card is not left empty.
+    draw.ellipse((245, 105, 655, 515), fill=(65, 76, 94, 255))
+    draw.ellipse((190, 235, 365, 410), fill=(65, 76, 94, 255))
+    draw.ellipse((535, 235, 710, 410), fill=(65, 76, 94, 255))
+
+    title_font = _load_card_font(54, bold=True)
+    body_font = _load_card_font(30, bold=True)
+    small_font = _load_card_font(24)
+
+    title = pal_name or "Unknown Pal"
+    lines = _fit_text(draw, title, title_font, 760)[:2]
+    y = 535
+    for line in lines:
+        box = draw.textbbox((0, 0), line, font=title_font)
+        draw.text(((width - (box[2] - box[0])) / 2, y), line, font=title_font, fill="white")
+        y += 62
+
+    number_text = f"Paldeck #{pal_number}"
+    box = draw.textbbox((0, 0), number_text, font=body_font)
+    draw.text(((width - (box[2] - box[0])) / 2, 35), number_text, font=body_font, fill=(220, 225, 235))
+
+    note = "Artwork unavailable"
+    box = draw.textbbox((0, 0), note, font=small_font)
+    draw.text(((width - (box[2] - box[0])) / 2, 650), note, font=small_font, fill=(170, 178, 192))
+
+    output = BytesIO()
+    image.convert("RGB").save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def _pal_image_candidates(pal_name: str, primary_url: str) -> list[str]:
+    """Return likely PalworldPals filename variations without duplicates."""
+    clean = re.sub(r"\s+", " ", str(pal_name)).strip()
+    lower = clean.casefold()
+    compact = re.sub(r"[^a-z0-9]", "", lower)
+    hyphen = re.sub(r"[^a-z0-9]+", "-", lower).strip("-")
+    underscore = re.sub(r"[^a-z0-9]+", "_", lower).strip("_")
+
+    stems = [
+        clean,
+        lower,
+        compact,
+        hyphen,
+        underscore,
+        clean.replace(" ", "-"),
+        clean.replace(" ", "_"),
+    ]
+
+    candidates = [primary_url]
+    for stem in stems:
+        if not stem:
+            continue
+        candidates.append(
+            f"https://palworldpals.com/media/pal/{quote(stem, safe='-_')}.png"
+        )
+
+    # Preserve order while removing duplicates.
+    return list(dict.fromkeys(url for url in candidates if url))
+
+
 async def download_image_bytes(url: str) -> bytes:
+    """Download a required non-Pal image and raise when it is unavailable."""
     timeout = aiohttp.ClientTimeout(total=20)
-    headers = {"User-Agent": "DiscordPalBot/1.0"}
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/126 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    }
 
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         async with session.get(url) as response:
             response.raise_for_status()
             return await response.read()
+
+
+async def download_pal_image_bytes(
+    pal_name: str,
+    pal_number: str,
+    primary_url: str,
+) -> bytes:
+    """Try image aliases and return generated artwork instead of aborting a pack."""
+    timeout = aiohttp.ClientTimeout(total=15)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/126 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Referer": "https://palworldpals.com/",
+    }
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        for candidate in _pal_image_candidates(pal_name, primary_url):
+            try:
+                async with session.get(candidate) as response:
+                    if response.status != 200:
+                        continue
+                    data = await response.read()
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    if data and ("image" in content_type or data.startswith((b"\x89PNG", b"\xff\xd8", b"RIFF"))):
+                        return data
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                continue
+
+    log.warning(
+        "No external artwork found for #%s %s; using generated placeholder",
+        pal_number,
+        pal_name,
+    )
+    return _make_missing_pal_art(pal_name, pal_number)
 
 
 def _load_card_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -2247,7 +2357,7 @@ async def pal_card(interaction: discord.Interaction) -> None:
 
         tier_name, tier = roll_pal_tier()
         traits = roll_real_passive_traits(passive_skills, tier_name)
-        pal_png = await download_image_bytes(image_url)
+        pal_png = await download_pal_image_bytes(pal_name, pal_number, image_url)
 
         card_buffer = await asyncio.to_thread(
             build_pal_card_png,
@@ -2503,7 +2613,14 @@ async def create_pal_deck_cards() -> list[dict[str, Any]]:
         )
 
     pal_pngs = await asyncio.gather(
-        *(download_image_bytes(card["image_url"]) for card in card_specs)
+        *(
+            download_pal_image_bytes(
+                card["pal_name"],
+                card["pal_number"],
+                card["image_url"],
+            )
+            for card in card_specs
+        )
     )
 
     rendered_cards = await asyncio.gather(
