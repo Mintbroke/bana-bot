@@ -499,6 +499,17 @@ def ensure_battle_cats_schema() -> None:
                         PRIMARY KEY (guild_id, user_id, roll_date)
                     );
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS test_battle_cat_tickets (
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        rare_ticket BIGINT NOT NULL DEFAULT 0 CHECK (rare_ticket >= 0),
+                        pack_ticket BIGINT NOT NULL DEFAULT 0 CHECK (pack_ticket >= 0),
+                        platinum_ticket BIGINT NOT NULL DEFAULT 0 CHECK (platinum_ticket >= 0),
+                        legend_ticket BIGINT NOT NULL DEFAULT 0 CHECK (legend_ticket >= 0),
+                        PRIMARY KEY (guild_id, user_id)
+                    );
+                """)
         log.info("Ensured Battle Cats database schema")
     finally:
         conn.close()
@@ -550,6 +561,145 @@ def release_battle_cat_daily_use(*, guild_id: int, user_id: int, kind: str) -> N
                     f"""
                     UPDATE test_battle_cat_daily_limits
                     SET {column} = GREATEST({column} - 1, 0)
+                    WHERE guild_id = %s
+                      AND user_id = %s
+                      AND roll_date = (NOW() AT TIME ZONE 'UTC')::date;
+                    """,
+                    (guild_id, user_id),
+                )
+                cur.execute("""
+                    DELETE FROM test_battle_cat_daily_limits
+                    WHERE guild_id = %s
+                      AND user_id = %s
+                      AND roll_date = (NOW() AT TIME ZONE 'UTC')::date
+                      AND card_draw_count = 0
+                      AND deck_open_count = 0;
+                """, (guild_id, user_id))
+    finally:
+        conn.close()
+
+
+TICKET_COLUMNS: dict[str, str] = {
+    "rare": "rare_ticket",
+    "pack": "pack_ticket",
+    "platinum": "platinum_ticket",
+    "legend": "legend_ticket",
+}
+
+TICKET_LABELS: dict[str, str] = {
+    "rare": "Rare Ticket",
+    "pack": "Pack Ticket",
+    "platinum": "Platinum Ticket",
+    "legend": "Legend Ticket",
+}
+
+
+def get_battle_cat_tickets(*, guild_id: int, user_id: int) -> dict[str, int]:
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO test_battle_cat_tickets (guild_id, user_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (guild_id, user_id) DO NOTHING;
+                """, (guild_id, user_id))
+                cur.execute("""
+                    SELECT rare_ticket, pack_ticket, platinum_ticket, legend_ticket
+                    FROM test_battle_cat_tickets
+                    WHERE guild_id = %s AND user_id = %s;
+                """, (guild_id, user_id))
+                row = cur.fetchone()
+        if row is None:
+            return {key: 0 for key in TICKET_COLUMNS}
+        return {
+            "rare": int(row[0]),
+            "pack": int(row[1]),
+            "platinum": int(row[2]),
+            "legend": int(row[3]),
+        }
+    finally:
+        conn.close()
+
+
+def add_battle_cat_tickets(*, guild_id: int, user_id: int, ticket_type: str, amount: int) -> int:
+    if ticket_type not in TICKET_COLUMNS:
+        raise ValueError("Unknown ticket type")
+    if amount <= 0:
+        raise ValueError("amount must be greater than 0")
+    column = TICKET_COLUMNS[ticket_type]
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO test_battle_cat_tickets (guild_id, user_id, {column})
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (guild_id, user_id)
+                    DO UPDATE SET {column} = test_battle_cat_tickets.{column} + EXCLUDED.{column}
+                    RETURNING {column};
+                    """,
+                    (guild_id, user_id, amount),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError("Database did not return updated ticket balance")
+                return int(row[0])
+    finally:
+        conn.close()
+
+
+def consume_battle_cat_ticket(*, guild_id: int, user_id: int, ticket_type: str) -> Optional[int]:
+    """Atomically consume one ticket and return the remaining balance."""
+    if ticket_type not in TICKET_COLUMNS:
+        raise ValueError("Unknown ticket type")
+    column = TICKET_COLUMNS[ticket_type]
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO test_battle_cat_tickets (guild_id, user_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (guild_id, user_id) DO NOTHING;
+                """, (guild_id, user_id))
+                cur.execute(
+                    f"""
+                    UPDATE test_battle_cat_tickets
+                    SET {column} = {column} - 1
+                    WHERE guild_id = %s AND user_id = %s AND {column} > 0
+                    RETURNING {column};
+                    """,
+                    (guild_id, user_id),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def refund_battle_cat_ticket(*, guild_id: int, user_id: int, ticket_type: str) -> None:
+    add_battle_cat_tickets(
+        guild_id=guild_id,
+        user_id=user_id,
+        ticket_type=ticket_type,
+        amount=1,
+    )
+
+
+def reset_battle_cat_daily_limit(*, guild_id: int, user_id: int, kind: str) -> None:
+    if kind not in {"card", "deck"}:
+        raise ValueError("kind must be 'card' or 'deck'")
+    column = "card_draw_count" if kind == "card" else "deck_open_count"
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE test_battle_cat_daily_limits
+                    SET {column} = 0
                     WHERE guild_id = %s
                       AND user_id = %s
                       AND roll_date = (NOW() AT TIME ZONE 'UTC')::date;
@@ -723,14 +873,23 @@ def roll_battle_cat_quality() -> str:
     return _weighted_choice(BATTLE_CAT_QUALITIES)
 
 
-async def draw_battle_cat(*, minimum_rarity: Optional[str] = None) -> BattleCatPull:
+async def draw_battle_cat(
+    *,
+    minimum_rarity: Optional[str] = None,
+    fixed_rarity: Optional[str] = None,
+) -> BattleCatPull:
     """Roll rarity FIRST, then pull only from that rarity's wiki category.
 
     Example: if the roll is Uber Rare, ``random.choice`` is performed only on
     the cached ``Category:Uber Rare Cats`` pool. A Rare/Super Rare cat can
     never be selected and then relabeled as Uber.
     """
-    rarity = roll_battle_cat_rarity(minimum=minimum_rarity)
+    if fixed_rarity is not None:
+        if fixed_rarity not in BATTLE_CAT_RARITIES:
+            raise ValueError(f"Unknown fixed rarity: {fixed_rarity}")
+        rarity = fixed_rarity
+    else:
+        rarity = roll_battle_cat_rarity(minimum=minimum_rarity)
     roster = await fetch_battle_cat_roster()
     rarity_pool = roster.get(rarity, [])
     if not rarity_pool:
@@ -1039,8 +1198,12 @@ def build_battle_cat_card_png(
 async def create_rendered_battle_cat_card(
     *,
     minimum_rarity: Optional[str] = None,
+    fixed_rarity: Optional[str] = None,
 ) -> dict[str, Any]:
-    pull = await draw_battle_cat(minimum_rarity=minimum_rarity)
+    pull = await draw_battle_cat(
+        minimum_rarity=minimum_rarity,
+        fixed_rarity=fixed_rarity,
+    )
     art, trait_bytes = await asyncio.gather(
         download_cat_image_bytes(pull.name, pull.image_url),
         download_trait_icon_bytes(pull.trait_icons),
@@ -1098,7 +1261,7 @@ class BattleCatDeckView(discord.ui.View):
             ),
             color=discord.Color.orange(),
         )
-        embed.set_thumbnail(url=self.pack_image_url)
+        embed.set_image(url=self.pack_image_url)
         return embed
 
     def current_file(self) -> discord.File:
@@ -1435,6 +1598,76 @@ class CatsInventoryView(discord.ui.View):
                 item.disabled = True
 
 
+async def _send_ticket_pull(
+    interaction: discord.Interaction,
+    *,
+    ticket_type: str,
+    fixed_rarity: str,
+) -> None:
+    """Consume one special ticket, render/store the card, and refund on failure."""
+    await interaction.response.defer()
+    if interaction.guild_id is None:
+        await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild_id
+    user_id = interaction.user.id
+    consumed = False
+    stored = False
+    try:
+        remaining = consume_battle_cat_ticket(
+            guild_id=guild_id,
+            user_id=user_id,
+            ticket_type=ticket_type,
+        )
+        if remaining is None:
+            await interaction.followup.send(
+                f"You do not have a **{TICKET_LABELS[ticket_type]}**.",
+                ephemeral=True,
+            )
+            return
+        consumed = True
+
+        card = await create_rendered_battle_cat_card(fixed_rarity=fixed_rarity)
+        pull: BattleCatPull = card["pull"]
+        card_id = save_owned_battle_cat(guild_id=guild_id, user_id=user_id, pull=pull)
+        stored = True
+
+        rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
+        filename = f"battle_cat_{ticket_type}_{user_id}_{card_id}.png"
+        file = discord.File(BytesIO(card["png"]), filename=filename)
+        embed = discord.Embed(
+            title=f"{rarity_cfg['emoji']} {pull.name}",
+            description=(
+                f"**Rarity:** {pull.rarity} {rarity_cfg['stars']}\n"
+                f"**Quality:** `{pull.quality}`\n"
+                f"**Targets:** {', '.join(pull.traits) if pull.traits else 'None listed'}\n"
+                f"**Collab:** {'Yes' if pull.is_collab else 'No'}\n\n"
+                f"Added to `/cats_inventory` as card ID `{card_id}`.\n"
+                f"**{TICKET_LABELS[ticket_type]}s remaining:** `{remaining}`"
+            ),
+            color=rarity_cfg["color"],
+        )
+        embed.set_image(url=f"attachment://{filename}")
+        await interaction.followup.send(embed=embed, file=file)
+    except Exception as error:
+        log.exception("Failed %s Battle Cats ticket pull: %s", ticket_type, error)
+        await interaction.followup.send(
+            f"An error occurred during the {TICKET_LABELS[ticket_type]} pull. Your ticket was returned.",
+            ephemeral=True,
+        )
+    finally:
+        if consumed and not stored:
+            try:
+                refund_battle_cat_ticket(
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    ticket_type=ticket_type,
+                )
+            except Exception:
+                log.exception("Failed to refund %s ticket for user %s", ticket_type, user_id)
+
+
 # ---------------------------------------------------------------------------
 # Slash-command registration
 # ---------------------------------------------------------------------------
@@ -1444,6 +1677,111 @@ def register_battle_cats_commands(
 ) -> None:
     """Register stored Battle Cats card commands on an existing discord.py bot."""
     ensure_battle_cats_schema()
+
+    @bot.tree.command(
+        name="admin_reset_cat_limit",
+        description="Admin: reset a user's Battle Cats card or pack daily limit",
+        guild=guild,
+    )
+    @app_commands.describe(user="User whose limit should be reset", limit_type="Which daily limit to reset")
+    @app_commands.choices(limit_type=[
+        app_commands.Choice(name="Card draws", value="card"),
+        app_commands.Choice(name="Card packs", value="deck"),
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    async def admin_reset_cat_limit(
+        interaction: discord.Interaction,
+        user: discord.Member,
+        limit_type: app_commands.Choice[str],
+    ) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        reset_battle_cat_daily_limit(
+            guild_id=interaction.guild_id,
+            user_id=user.id,
+            kind=limit_type.value,
+        )
+        label = "card draw" if limit_type.value == "card" else "card pack"
+        await interaction.response.send_message(
+            f"Reset today's **{label}** limit for {user.mention}.",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(
+        name="admin_add_cat_tickets",
+        description="Admin: add Battle Cats tickets to a user",
+        guild=guild,
+    )
+    @app_commands.describe(user="User receiving tickets", ticket_type="Ticket type", amount="Number of tickets to add")
+    @app_commands.choices(ticket_type=[
+        app_commands.Choice(name="Rare Ticket", value="rare"),
+        app_commands.Choice(name="Pack Ticket", value="pack"),
+        app_commands.Choice(name="Platinum Ticket", value="platinum"),
+        app_commands.Choice(name="Legend Ticket", value="legend"),
+    ])
+    @app_commands.checks.has_permissions(administrator=True)
+    async def admin_add_cat_tickets(
+        interaction: discord.Interaction,
+        user: discord.Member,
+        ticket_type: app_commands.Choice[str],
+        amount: app_commands.Range[int, 1, 100000],
+    ) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        new_balance = add_battle_cat_tickets(
+            guild_id=interaction.guild_id,
+            user_id=user.id,
+            ticket_type=ticket_type.value,
+            amount=int(amount),
+        )
+        await interaction.response.send_message(
+            f"Added **{amount}x {TICKET_LABELS[ticket_type.value]}** to {user.mention}. "
+            f"New balance: **{new_balance}**.",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(
+        name="cat_tickets",
+        description="See your Battle Cats ticket balances",
+        guild=guild,
+    )
+    async def cat_tickets(interaction: discord.Interaction) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        balances = get_battle_cat_tickets(
+            guild_id=interaction.guild_id,
+            user_id=interaction.user.id,
+        )
+        embed = discord.Embed(
+            title="Battle Cats Tickets",
+            description=(
+                f"🎟️ **Rare Ticket:** `{balances['rare']}`\n"
+                f"📦 **Pack Ticket:** `{balances['pack']}`\n"
+                f"💿 **Platinum Ticket:** `{balances['platinum']}`\n"
+                f"🌈 **Legend Ticket:** `{balances['legend']}`"
+            ),
+            color=discord.Color.blurple(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @bot.tree.command(
+        name="platinum_pull",
+        description="Use 1 Platinum Ticket for a guaranteed Uber Rare Battle Cat card",
+        guild=guild,
+    )
+    async def platinum_pull(interaction: discord.Interaction) -> None:
+        await _send_ticket_pull(interaction, ticket_type="platinum", fixed_rarity="Uber Rare")
+
+    @bot.tree.command(
+        name="legend_pull",
+        description="Use 1 Legend Ticket for a guaranteed Legend Rare Battle Cat card",
+        guild=guild,
+    )
+    async def legend_pull(interaction: discord.Interaction) -> None:
+        await _send_ticket_pull(interaction, ticket_type="legend", fixed_rarity="Bana Rare")
 
     @bot.tree.command(
         name="battle_cat_card",
@@ -1612,6 +1950,8 @@ __all__ = [
     "BATTLE_CAT_QUALITIES",
     "BATTLE_CAT_CARD_DAILY_LIMIT",
     "BATTLE_CAT_DECK_DAILY_LIMIT",
+    "TICKET_COLUMNS",
+    "TICKET_LABELS",
     "BATTLE_CATS_WIKI_API",
     "WIKI_CATEGORY_BY_RARITY",
     "BattleCatPull",
@@ -1621,6 +1961,10 @@ __all__ = [
     "create_battle_cat_deck_cards",
     "create_rendered_battle_cat_card",
     "draw_battle_cat",
+    "get_battle_cat_tickets",
+    "add_battle_cat_tickets",
+    "consume_battle_cat_ticket",
+    "reset_battle_cat_daily_limit",
     "ensure_battle_cats_schema",
     "fetch_battle_cat_roster",
     "fetch_collaboration_cat_titles",
