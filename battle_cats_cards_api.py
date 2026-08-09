@@ -46,15 +46,15 @@ log = logging.getLogger("bot.battle_cats")
 BATTLE_CAT_RARITIES: dict[str, dict[str, Any]] = {
     "Rare": {
         "weight": 700,
-        "emoji": "🔵",
+        "emoji": "⚪",
         "stars": "★★",
-        "color": discord.Color.blue(),
+        "color": discord.Color.light_grey(),
     },
     "Super Rare": {
         "weight": 250,
-        "emoji": "🟣",
+        "emoji": "🟢",
         "stars": "★★★",
-        "color": discord.Color.purple(),
+        "color": discord.Color.green(),
     },
     "Uber Rare": {
         "weight": 49,
@@ -66,7 +66,7 @@ BATTLE_CAT_RARITIES: dict[str, dict[str, Any]] = {
         "weight": 1,
         "emoji": "🌈",
         "stars": "★★★★★★",
-        "color": discord.Color.from_rgb(255, 105, 180),
+        "color": discord.Color.red(),  # Discord embeds cannot use a rainbow gradient
     },
 }
 
@@ -100,7 +100,34 @@ WIKI_CATEGORY_BY_RARITY: dict[str, str] = {
 
 _WIKI_ROSTER_CACHE: dict[str, list[dict[str, str]]] | None = None
 _WIKI_IMAGE_URL_CACHE: dict[str, str] = {}
+_WIKI_CAT_TRAITS_CACHE: dict[str, tuple[str, ...]] = {}
+_WIKI_TRAIT_ICON_URL_CACHE: dict[str, str] = {}
+_WIKI_COLLAB_TITLES_CACHE: set[str] | None = None
 _WIKI_CACHE_LOCK: asyncio.Lock | None = None
+
+# Battle Cats Wiki trait icon filenames. These are the same official icon names
+# used by the wiki's trait modules/categories.
+TRAIT_ICON_FILES: dict[str, str] = {
+    "Traitless": "Traitlesstraiticon.png",
+    "Red": "Redtraiticon.png",
+    "Floating": "Floatingtraiticon.png",
+    "Black": "Darktraiticon.png",
+    "Metal": "Metaltraiticon.png",
+    "Angel": "Angeltraiticon.png",
+    "Alien": "Alientraiticon.png",
+    "Zombie": "Zombietraiticon.png",
+    "Relic": "Relictraiticon.png",
+    "Aku": "Akutraiticon.png",
+}
+
+# Only enemy-target traits are shown on Cat cards. Miscellaneous categories
+# such as Anti-Cat Cats (old PC PvP content) are intentionally excluded.
+SUPPORTED_TARGET_TRAITS = tuple(TRAIT_ICON_FILES)
+
+# After rarity is rolled, choose the source pool inside that rarity.
+# 95% standard Battle Cats units, 5% Collaboration Event units.
+COLLAB_PULL_CHANCE = 0.05
+COLLAB_CATEGORY = "Category:Collaboration Event Cats"
 
 
 def _wiki_cache_lock() -> asyncio.Lock:
@@ -123,7 +150,7 @@ def _display_name_from_wiki_title(title: str) -> str:
 async def _wiki_api_get(params: dict[str, Any]) -> dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=20)
     headers = {
-        "User-Agent": "BattleCatsDiscordCard/2.0 (MediaWiki API client)",
+        "User-Agent": "BattleCatsDiscordCard/3.0 (MediaWiki API client)",
         "Accept": "application/json",
     }
     request_params = {"format": "json", "formatversion": "2", **params}
@@ -213,6 +240,53 @@ async def fetch_battle_cat_roster(*, force_refresh: bool = False) -> dict[str, l
         return _WIKI_ROSTER_CACHE
 
 
+
+
+async def fetch_collaboration_cat_titles(*, force_refresh: bool = False) -> set[str]:
+    """Fetch/cache every wiki page listed as a Collaboration Event Cat.
+
+    Only page titles are cached. This does not download any cat artwork.
+    The resulting set is intersected with the already-selected rarity pool,
+    so a collab pull can never bypass the rarity rolled first.
+    """
+    global _WIKI_COLLAB_TITLES_CACHE
+
+    if _WIKI_COLLAB_TITLES_CACHE is not None and not force_refresh:
+        return _WIKI_COLLAB_TITLES_CACHE
+
+    titles: set[str] = set()
+    cmcontinue: str | None = None
+
+    while True:
+        params: dict[str, Any] = {
+            "action": "query",
+            "list": "categorymembers",
+            "cmtitle": COLLAB_CATEGORY,
+            "cmnamespace": "0",
+            "cmlimit": "max",
+            "cmtype": "page",
+        }
+        if cmcontinue:
+            params["cmcontinue"] = cmcontinue
+
+        payload = await _wiki_api_get(params)
+        for member in payload.get("query", {}).get("categorymembers", []):
+            title = str(member.get("title", "")).strip()
+            if title:
+                titles.add(title)
+
+        cmcontinue = payload.get("continue", {}).get("cmcontinue")
+        if not cmcontinue:
+            break
+
+    if not titles:
+        raise RuntimeError(f"No cats returned from {COLLAB_CATEGORY}")
+
+    _WIKI_COLLAB_TITLES_CACHE = titles
+    log.info("Loaded %s Battle Cats collaboration unit titles", len(titles))
+    return titles
+
+
 async def fetch_wiki_cat_image_url(wiki_title: str) -> str:
     """Resolve one selected Cat article to its representative image URL.
 
@@ -244,6 +318,127 @@ async def fetch_wiki_cat_image_url(wiki_title: str) -> str:
     return image_url
 
 
+async def fetch_wiki_cat_target_traits(wiki_title: str) -> tuple[str, ...]:
+    """Return the enemy traits this specific Cat targets.
+
+    Battle Cats Wiki categorizes units as ``Anti-Red Cats``,
+    ``Anti-Floating Cats``, etc. Querying the selected page's categories gives
+    us unit-specific target data without hardcoding a Cat -> traits database.
+    """
+    if wiki_title in _WIKI_CAT_TRAITS_CACHE:
+        return _WIKI_CAT_TRAITS_CACHE[wiki_title]
+
+    payload = await _wiki_api_get(
+        {
+            "action": "query",
+            "prop": "categories",
+            "titles": wiki_title,
+            "cllimit": "max",
+            "clshow": "!hidden",
+        }
+    )
+    pages = payload.get("query", {}).get("pages", [])
+    category_titles: list[str] = []
+    if pages:
+        category_titles = [
+            str(item.get("title", ""))
+            for item in pages[0].get("categories", [])
+        ]
+
+    found: list[str] = []
+    for category in category_titles:
+        match = re.fullmatch(r"Category:Anti-(.+?) Cats", category, flags=re.IGNORECASE)
+        if not match:
+            continue
+        raw = match.group(1).strip()
+        # Wiki calls Black enemies "Black" in anti-target categories while
+        # some internal modules call the trait "Dark".
+        normalized = {
+            "traitless": "Traitless",
+            "red": "Red",
+            "floating": "Floating",
+            "black": "Black",
+            "metal": "Metal",
+            "angel": "Angel",
+            "alien": "Alien",
+            "zombie": "Zombie",
+            "relic": "Relic",
+            "aku": "Aku",
+        }.get(raw.casefold())
+        if normalized and normalized not in found:
+            found.append(normalized)
+
+    traits = tuple(found)
+    _WIKI_CAT_TRAITS_CACHE[wiki_title] = traits
+    return traits
+
+
+async def fetch_trait_icon_url(trait: str) -> str:
+    """Resolve one official Battle Cats Wiki trait icon URL."""
+    if trait in _WIKI_TRAIT_ICON_URL_CACHE:
+        return _WIKI_TRAIT_ICON_URL_CACHE[trait]
+
+    filename = TRAIT_ICON_FILES.get(trait)
+    if not filename:
+        return ""
+
+    payload = await _wiki_api_get(
+        {
+            "action": "query",
+            "prop": "imageinfo",
+            "titles": f"File:{filename}",
+            "iiprop": "url",
+            "iiurlwidth": "96",
+        }
+    )
+    pages = payload.get("query", {}).get("pages", [])
+    url = ""
+    if pages:
+        info = pages[0].get("imageinfo") or []
+        if info:
+            url = str(info[0].get("thumburl") or info[0].get("url") or "")
+
+    _WIKI_TRAIT_ICON_URL_CACHE[trait] = url
+    return url
+
+
+async def fetch_cat_trait_icons(wiki_title: str) -> tuple[tuple[str, str], ...]:
+    """Return ``(trait_name, icon_url)`` pairs for one selected Cat."""
+    traits = await fetch_wiki_cat_target_traits(wiki_title)
+    if not traits:
+        return ()
+    urls = await asyncio.gather(*(fetch_trait_icon_url(trait) for trait in traits))
+    return tuple((trait, url) for trait, url in zip(traits, urls) if url)
+
+
+async def download_trait_icon_bytes(icon_pairs: tuple[tuple[str, str], ...]) -> dict[str, bytes]:
+    """Download only the trait icons needed by the currently rendered Cat."""
+    if not icon_pairs:
+        return {}
+
+    timeout = aiohttp.ClientTimeout(total=12)
+    headers = {
+        "User-Agent": "Mozilla/5.0 BattleCatsDiscordCard/3.0",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    }
+
+    async def one(trait: str, url: str) -> tuple[str, bytes | None]:
+        if not url:
+            return trait, None
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        data = await response.read()
+                        return trait, data or None
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            log.warning("Trait icon download failed for %s", trait, exc_info=True)
+        return trait, None
+
+    results = await asyncio.gather(*(one(trait, url) for trait, url in icon_pairs))
+    return {trait: data for trait, data in results if data}
+
+
 BATTLE_CAT_PACK_SIZE = 7
 
 
@@ -255,6 +450,9 @@ class BattleCatPull:
     banner: str
     image_url: str
     wiki_title: str = ""
+    traits: tuple[str, ...] = ()
+    trait_icons: tuple[tuple[str, str], ...] = ()
+    is_collab: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -288,15 +486,43 @@ def roll_battle_cat_quality() -> str:
 
 
 async def draw_battle_cat(*, minimum_rarity: Optional[str] = None) -> BattleCatPull:
-    """Roll rarity/quality and select a unit from the cached public wiki roster."""
+    """Roll rarity FIRST, then pull only from that rarity's wiki category.
+
+    Example: if the roll is Uber Rare, ``random.choice`` is performed only on
+    the cached ``Category:Uber Rare Cats`` pool. A Rare/Super Rare cat can
+    never be selected and then relabeled as Uber.
+    """
     rarity = roll_battle_cat_rarity(minimum=minimum_rarity)
     roster = await fetch_battle_cat_roster()
-    pool = roster.get(rarity, [])
-    if not pool:
+    rarity_pool = roster.get(rarity, [])
+    if not rarity_pool:
         raise RuntimeError(f"No Battle Cats Wiki entries loaded for {rarity}")
 
-    cat = random.choice(pool)
-    image_url = await fetch_wiki_cat_image_url(cat["wiki_title"])
+    collab_titles = await fetch_collaboration_cat_titles()
+    collab_pool = [cat for cat in rarity_pool if cat["wiki_title"] in collab_titles]
+    standard_pool = [cat for cat in rarity_pool if cat["wiki_title"] not in collab_titles]
+
+    wants_collab = random.random() < COLLAB_PULL_CHANCE
+    if wants_collab and collab_pool:
+        selected_pool = collab_pool
+        is_collab = True
+    elif standard_pool:
+        selected_pool = standard_pool
+        is_collab = False
+    elif collab_pool:
+        # Defensive fallback if the wiki ever has a rarity containing only
+        # collaboration units. Rarity correctness takes priority over 95/5.
+        selected_pool = collab_pool
+        is_collab = True
+    else:
+        raise RuntimeError(f"No selectable Battle Cats Wiki entries for {rarity}")
+
+    cat = random.choice(selected_pool)
+    image_url, traits, trait_icons = await asyncio.gather(
+        fetch_wiki_cat_image_url(cat["wiki_title"]),
+        fetch_wiki_cat_target_traits(cat["wiki_title"]),
+        fetch_cat_trait_icons(cat["wiki_title"]),
+    )
     return BattleCatPull(
         name=cat["name"],
         rarity=rarity,
@@ -304,6 +530,9 @@ async def draw_battle_cat(*, minimum_rarity: Optional[str] = None) -> BattleCatP
         banner=cat.get("banner", "Battle Cats Wiki"),
         image_url=image_url,
         wiki_title=cat["wiki_title"],
+        traits=traits,
+        trait_icons=trait_icons,
+        is_collab=is_collab,
     )
 
 
@@ -380,7 +609,7 @@ async def download_cat_image_bytes(cat_name: str, image_url: str) -> bytes:
 
     timeout = aiohttp.ClientTimeout(total=15)
     headers = {
-        "User-Agent": "Mozilla/5.0 BattleCatsDiscordCard/1.0",
+        "User-Agent": "Mozilla/5.0 BattleCatsDiscordCard/3.0",
         "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
     }
     try:
@@ -396,19 +625,68 @@ async def download_cat_image_bytes(cat_name: str, image_url: str) -> bytes:
     return make_missing_cat_art(cat_name)
 
 
+def _make_rainbow_gradient(width: int, height: int) -> Image.Image:
+    """Create a smooth horizontal rainbow RGBA gradient for Legend/Bana cards."""
+    stops = [
+        (255, 70, 70),
+        (255, 170, 55),
+        (245, 225, 70),
+        (70, 205, 105),
+        (65, 170, 245),
+        (105, 90, 235),
+        (205, 80, 225),
+        (255, 70, 120),
+    ]
+    image = Image.new("RGBA", (width, height))
+    px = image.load()
+    segments = len(stops) - 1
+    for x in range(width):
+        pos = (x / max(1, width - 1)) * segments
+        index = min(int(pos), segments - 1)
+        frac = pos - index
+        c1, c2 = stops[index], stops[index + 1]
+        color = tuple(int(c1[i] + (c2[i] - c1[i]) * frac) for i in range(3)) + (255,)
+        for y in range(height):
+            px[x, y] = color
+    return image
+
+
+def _paste_rounded_gradient(
+    base: Image.Image,
+    box: tuple[int, int, int, int],
+    *,
+    radius: int,
+    alpha: int = 255,
+) -> None:
+    """Paste a rainbow gradient clipped to a rounded rectangle."""
+    left, top, right, bottom = box
+    w, h = right - left, bottom - top
+    gradient = _make_rainbow_gradient(w, h)
+    if alpha < 255:
+        gradient.putalpha(alpha)
+    mask = Image.new("L", (w, h), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
+    base.paste(gradient, (left, top), mask)
+
+
 def build_battle_cat_card_png(
     art_png: bytes,
     *,
     pull: BattleCatPull,
+    trait_icon_bytes: Optional[dict[str, bytes]] = None,
 ) -> BytesIO:
     """Render one Battle Cats pull as a 900x1200 collectible card."""
     width, height = 900, 1200
 
     palette = {
-        "Rare": ((49, 102, 190), (17, 38, 75)),
-        "Super Rare": ((126, 71, 181), (46, 24, 72)),
-        "Uber Rare": ((218, 166, 42), (85, 60, 10)),
-        "Bana Rare": ((226, 80, 158), (78, 24, 66)),
+        # Common -> uncommon -> premium rarity progression.
+        "Rare": ((145, 150, 158), (42, 46, 52)),       # Gray
+        "Super Rare": ((65, 180, 92), (24, 67, 35)),   # Green
+        "Uber Rare": ((230, 180, 45), (88, 63, 10)),   # Gold
+        # Bana Rare maps to Battle Cats Legend Rare. Its card gets a rainbow
+        # accent below; red is retained as the readable dark/background tone.
+        "Bana Rare": ((220, 55, 55), (72, 20, 20)),
     }
     accent, dark = palette.get(pull.rarity, palette["Rare"])
     rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
@@ -417,9 +695,18 @@ def build_battle_cat_card_png(
     card = Image.new("RGBA", (width, height), dark + (255,))
     draw = ImageDraw.Draw(card)
 
-    draw.rounded_rectangle((18, 18, 882, 1182), radius=42, fill=accent + (255,))
-    draw.rounded_rectangle((34, 34, 866, 1166), radius=34, fill=dark + (255,))
-    draw.rounded_rectangle((55, 55, 845, 180), radius=25, fill=accent + (235,))
+    if pull.rarity == "Bana Rare":
+        # True rainbow treatment on the generated Legend Rare card. Discord
+        # embed sidebars can only use one color, so those use the red fallback.
+        _paste_rounded_gradient(card, (18, 18, 882, 1182), radius=42)
+        draw = ImageDraw.Draw(card)
+        draw.rounded_rectangle((34, 34, 866, 1166), radius=34, fill=dark + (255,))
+        _paste_rounded_gradient(card, (55, 55, 845, 180), radius=25, alpha=245)
+        draw = ImageDraw.Draw(card)
+    else:
+        draw.rounded_rectangle((18, 18, 882, 1182), radius=42, fill=accent + (255,))
+        draw.rounded_rectangle((34, 34, 866, 1166), radius=34, fill=dark + (255,))
+        draw.rounded_rectangle((55, 55, 845, 180), radius=25, fill=accent + (235,))
     draw.rounded_rectangle((55, 200, 845, 735), radius=30, fill=(15, 18, 24, 235))
     draw.rounded_rectangle((55, 755, 845, 1135), radius=30, fill=(12, 15, 20, 235))
 
@@ -427,6 +714,7 @@ def build_battle_cat_card_png(
     subtitle_font = _load_font(27, bold=True)
     section_font = _load_font(29, bold=True)
     body_font = _load_font(24)
+    small_font = _load_font(18, bold=True)
     stat_font = _load_font(25, bold=True)
 
     title_lines = _fit_text(draw, pull.name, title_font, 700)[:2]
@@ -436,6 +724,8 @@ def build_battle_cat_card_png(
         ty += 48
 
     subtitle = f"{pull.rarity.upper()}  •  {rarity_cfg['stars']}"
+    if pull.is_collab:
+        subtitle += "  •  COLLAB"
     draw.text((82, 145), subtitle, font=subtitle_font, fill=(245, 245, 245))
 
     artwork = Image.open(BytesIO(art_png)).convert("RGBA")
@@ -453,25 +743,54 @@ def build_battle_cat_card_png(
     card.alpha_composite(backdrop, (80, 220))
 
     draw = ImageDraw.Draw(card)
-    draw.text((82, 785), "DRAW RESULT", font=section_font, fill=accent)
+    draw.text((82, 785), "TARGET TRAITS", font=section_font, fill=accent)
 
+    trait_icon_bytes = trait_icon_bytes or {}
+    icon_x = 82
+    icon_y = 830
+    icon_size = 68
+    shown = 0
+    for trait in pull.traits:
+        raw = trait_icon_bytes.get(trait)
+        if not raw:
+            continue
+        try:
+            icon = Image.open(BytesIO(raw)).convert("RGBA")
+            icon.thumbnail((icon_size, icon_size), Image.Resampling.LANCZOS)
+            card.alpha_composite(icon, (icon_x + (icon_size - icon.width) // 2, icon_y))
+            label_box = draw.textbbox((0, 0), trait, font=small_font)
+            label_w = label_box[2] - label_box[0]
+            draw.text(
+                (icon_x + (icon_size - label_w) / 2, icon_y + 70),
+                trait,
+                font=small_font,
+                fill=(225, 228, 234),
+            )
+            icon_x += 115
+            shown += 1
+        except Exception:
+            log.warning("Could not render trait icon for %s", trait, exc_info=True)
+
+    if shown == 0:
+        draw.text((85, 838), "No anti-trait category listed", font=body_font, fill=(205, 210, 218))
+
+    # Keep the rolled quality information, but remove the old DRAW RESULT block.
     quality_stars = {"C": "★", "B": "★★", "A": "★★★", "S": "★★★★", "SS": "★★★★★"}
-    rows = [
-        ("Rarity", f"{rarity_cfg['emoji']} {pull.rarity}"),
-        ("Quality", f"{pull.quality}  {quality_stars[pull.quality]}  ({quality_cfg['label']})"),
-        ("Banner", pull.banner),
-        ("Card Multiplier", f"x{quality_cfg['multiplier']:.2f}"),
-    ]
-
-    y = 845
-    for label, value in rows:
-        draw.text((85, y), f"{label}:", font=stat_font, fill="white")
-        value_lines = _fit_text(draw, value, body_font, 480)[:2]
-        vy = y + 2
-        for line in value_lines:
-            draw.text((325, vy), line, font=body_font, fill=(215, 220, 228))
-            vy += 28
-        y = max(y + 52, vy + 10)
+    info_y = 955
+    draw.text((85, info_y), "Quality:", font=stat_font, fill="white")
+    draw.text(
+        (260, info_y + 2),
+        f"{pull.quality}  {quality_stars[pull.quality]}  ({quality_cfg['label']})",
+        font=body_font,
+        fill=(215, 220, 228),
+    )
+    draw.text((85, info_y + 55), "Multiplier:", font=stat_font, fill="white")
+    draw.text(
+        (260, info_y + 57),
+        f"x{quality_cfg['multiplier']:.2f}",
+        font=body_font,
+        fill=(215, 220, 228),
+    )
 
     output = BytesIO()
     card.convert("RGB").save(output, format="PNG", optimize=True)
@@ -484,8 +803,16 @@ async def create_rendered_battle_cat_card(
     minimum_rarity: Optional[str] = None,
 ) -> dict[str, Any]:
     pull = await draw_battle_cat(minimum_rarity=minimum_rarity)
-    art = await download_cat_image_bytes(pull.name, pull.image_url)
-    rendered = await asyncio.to_thread(build_battle_cat_card_png, art, pull=pull)
+    art, trait_bytes = await asyncio.gather(
+        download_cat_image_bytes(pull.name, pull.image_url),
+        download_trait_icon_bytes(pull.trait_icons),
+    )
+    rendered = await asyncio.to_thread(
+        build_battle_cat_card_png,
+        art,
+        pull=pull,
+        trait_icon_bytes=trait_bytes,
+    )
     return {"pull": pull, "png": rendered.getvalue()}
 
 
@@ -543,10 +870,11 @@ class BattleCatDeckView(discord.ui.View):
         rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
         guaranteed = self.current_index == len(self.cards) - 1
 
+        trait_text = ", ".join(pull.traits) if pull.traits else "None listed"
         description = (
             f"**Rarity:** {rarity_cfg['emoji']} {pull.rarity} {rarity_cfg['stars']}\n"
             f"**Quality:** `{pull.quality}`\n"
-            f"**Banner:** {pull.banner}"
+            f"**Targets:** {trait_text}"
         )
         if guaranteed:
             description += "\n**Guaranteed slot:** Super Rare or better"
@@ -642,8 +970,7 @@ def register_battle_cats_commands(
                 description=(
                     f"**Rarity:** {pull.rarity} {rarity_cfg['stars']}\n"
                     f"**Quality:** `{pull.quality}`\n"
-                    f"**Banner:** {pull.banner}\n\n"
-                    "This is a preview and was **not** stored."
+                    f"**Targets:** {', '.join(pull.traits) if pull.traits else 'None listed'}"
                 ),
                 color=rarity_cfg["color"],
             )
@@ -686,7 +1013,11 @@ __all__ = [
     "create_battle_cat_deck_cards",
     "create_rendered_battle_cat_card",
     "fetch_battle_cat_roster",
+    "fetch_collaboration_cat_titles",
     "fetch_wiki_cat_image_url",
+    "fetch_wiki_cat_target_traits",
+    "fetch_cat_trait_icons",
+    "fetch_trait_icon_url",
     "draw_battle_cat",
     "register_battle_cats_commands",
     "roll_battle_cat_quality",
