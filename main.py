@@ -43,6 +43,10 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 guild = discord.Object(id=GUILD_ID)
 num_tickets = 10  # Example user data
 
+from battle_cats_cards_api import register_battle_cats_commands
+
+register_battle_cats_commands(bot, guild)
+
 def rand1to(num):
     rand_bytes = os.urandom(4)
     rand_int = int.from_bytes(rand_bytes, "big")  # convert to integer
