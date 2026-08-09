@@ -29,11 +29,13 @@ import re
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Optional
+from datetime import datetime, timezone, timedelta
 
 import aiohttp
 import discord
 from discord import app_commands
 from PIL import Image, ImageDraw, ImageFont
+from functions import get_db_connection
 
 log = logging.getLogger("bot.battle_cats")
 
@@ -440,6 +442,233 @@ async def download_trait_icon_bytes(icon_pairs: tuple[tuple[str, str], ...]) -> 
 
 
 BATTLE_CAT_PACK_SIZE = 7
+BATTLE_CAT_CARD_DAILY_LIMIT = 5
+BATTLE_CAT_DECK_DAILY_LIMIT = 3
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL persistence + per-user UTC daily limits
+# ---------------------------------------------------------------------------
+def ensure_battle_cats_schema() -> None:
+    """Create Battle Cats ownership and daily-limit tables if needed."""
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS test_owned_battle_cats (
+                        id BIGSERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        cat_name TEXT NOT NULL,
+                        wiki_title TEXT NOT NULL,
+                        rarity TEXT NOT NULL,
+                        quality TEXT NOT NULL,
+                        banner TEXT NOT NULL DEFAULT 'Battle Cats Wiki',
+                        image_url TEXT NOT NULL DEFAULT '',
+                        is_collab BOOLEAN NOT NULL DEFAULT FALSE,
+                        traits_json TEXT NOT NULL DEFAULT '[]',
+                        is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
+                        obtained_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_test_owned_battle_cats_user
+                    ON test_owned_battle_cats (
+                        guild_id, user_id, is_favorite DESC, obtained_at DESC, id DESC
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS test_battle_cat_daily_limits (
+                        guild_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        roll_date DATE NOT NULL,
+                        card_draw_count INTEGER NOT NULL DEFAULT 0
+                            CHECK (card_draw_count >= 0 AND card_draw_count <= 5),
+                        deck_open_count INTEGER NOT NULL DEFAULT 0
+                            CHECK (deck_open_count >= 0 AND deck_open_count <= 3),
+                        PRIMARY KEY (guild_id, user_id, roll_date)
+                    );
+                """)
+        log.info("Ensured Battle Cats database schema")
+    finally:
+        conn.close()
+
+
+def reserve_battle_cat_daily_use(*, guild_id: int, user_id: int, kind: str) -> Optional[int]:
+    """Atomically reserve one card draw or deck opening for the current UTC day."""
+    if kind not in {"card", "deck"}:
+        raise ValueError("kind must be 'card' or 'deck'")
+
+    column = "card_draw_count" if kind == "card" else "deck_open_count"
+    limit = BATTLE_CAT_CARD_DAILY_LIMIT if kind == "card" else BATTLE_CAT_DECK_DAILY_LIMIT
+    other_column = "deck_open_count" if kind == "card" else "card_draw_count"
+
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                # Column names come only from the validated fixed choices above.
+                cur.execute(
+                    f"""
+                    INSERT INTO test_battle_cat_daily_limits (
+                        guild_id, user_id, roll_date, {column}, {other_column}
+                    )
+                    VALUES (%s, %s, (NOW() AT TIME ZONE 'UTC')::date, 1, 0)
+                    ON CONFLICT (guild_id, user_id, roll_date)
+                    DO UPDATE SET {column} = test_battle_cat_daily_limits.{column} + 1
+                    WHERE test_battle_cat_daily_limits.{column} < %s
+                    RETURNING {column};
+                    """,
+                    (guild_id, user_id, limit),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def release_battle_cat_daily_use(*, guild_id: int, user_id: int, kind: str) -> None:
+    """Return a reserved daily use when generation/storage fails."""
+    if kind not in {"card", "deck"}:
+        raise ValueError("kind must be 'card' or 'deck'")
+    column = "card_draw_count" if kind == "card" else "deck_open_count"
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE test_battle_cat_daily_limits
+                    SET {column} = GREATEST({column} - 1, 0)
+                    WHERE guild_id = %s
+                      AND user_id = %s
+                      AND roll_date = (NOW() AT TIME ZONE 'UTC')::date;
+                    """,
+                    (guild_id, user_id),
+                )
+                cur.execute("""
+                    DELETE FROM test_battle_cat_daily_limits
+                    WHERE guild_id = %s
+                      AND user_id = %s
+                      AND roll_date = (NOW() AT TIME ZONE 'UTC')::date
+                      AND card_draw_count = 0
+                      AND deck_open_count = 0;
+                """, (guild_id, user_id))
+    finally:
+        conn.close()
+
+
+def next_utc_reset_timestamp() -> int:
+    now = datetime.now(timezone.utc)
+    tomorrow = (now + timedelta(days=1)).date()
+    reset = datetime.combine(tomorrow, datetime.min.time(), tzinfo=timezone.utc)
+    return int(reset.timestamp())
+
+
+def save_owned_battle_cat(*, guild_id: int, user_id: int, pull: "BattleCatPull") -> int:
+    """Persist one individual drawn card and return its ownership ID."""
+    import json
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO test_owned_battle_cats (
+                        guild_id, user_id, cat_name, wiki_title, rarity, quality,
+                        banner, image_url, is_collab, traits_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id;
+                """, (
+                    guild_id, user_id, pull.name, pull.wiki_title, pull.rarity,
+                    pull.quality, pull.banner, pull.image_url, pull.is_collab,
+                    json.dumps(list(pull.traits)),
+                ))
+                row = cur.fetchone()
+                if row is None:
+                    raise RuntimeError("Database did not return Battle Cat card ID")
+                return int(row[0])
+    finally:
+        conn.close()
+
+
+def save_owned_battle_cat_pack(*, guild_id: int, user_id: int, cards: list[dict[str, Any]]) -> list[int]:
+    """Persist every card in one pack in a single transaction."""
+    import json
+    conn = get_db_connection()
+    ids: list[int] = []
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                for card in cards:
+                    pull: BattleCatPull = card["pull"]
+                    cur.execute("""
+                        INSERT INTO test_owned_battle_cats (
+                            guild_id, user_id, cat_name, wiki_title, rarity, quality,
+                            banner, image_url, is_collab, traits_json
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id;
+                    """, (
+                        guild_id, user_id, pull.name, pull.wiki_title, pull.rarity,
+                        pull.quality, pull.banner, pull.image_url, pull.is_collab,
+                        json.dumps(list(pull.traits)),
+                    ))
+                    row = cur.fetchone()
+                    if row is None:
+                        raise RuntimeError("Database did not return Battle Cat card ID")
+                    ids.append(int(row[0]))
+        return ids
+    finally:
+        conn.close()
+
+
+def get_owned_battle_cats(*, guild_id: int, user_id: int) -> list[dict[str, Any]]:
+    import json
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, cat_name, wiki_title, rarity, quality, banner, image_url,
+                       is_collab, traits_json, is_favorite, obtained_at
+                FROM test_owned_battle_cats
+                WHERE guild_id = %s AND user_id = %s
+                ORDER BY is_favorite DESC, obtained_at DESC, id DESC;
+            """, (guild_id, user_id))
+            rows = cur.fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                traits = tuple(json.loads(row[8] or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                traits = ()
+            result.append({
+                "id": int(row[0]), "cat_name": str(row[1]), "wiki_title": str(row[2]),
+                "rarity": str(row[3]), "quality": str(row[4]), "banner": str(row[5]),
+                "image_url": str(row[6] or ""), "is_collab": bool(row[7]),
+                "traits": traits, "is_favorite": bool(row[9]), "obtained_at": row[10],
+            })
+        return result
+    finally:
+        conn.close()
+
+
+def set_owned_battle_cat_favorite(*, guild_id: int, user_id: int, card_id: int, is_favorite: bool) -> bool:
+    conn = get_db_connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE test_owned_battle_cats
+                    SET is_favorite = %s
+                    WHERE id = %s AND guild_id = %s AND user_id = %s
+                    RETURNING id;
+                """, (is_favorite, card_id, guild_id, user_id))
+                return cur.fetchone() is not None
+    finally:
+        conn.close()
+
 
 
 @dataclass(frozen=True)
@@ -942,6 +1171,207 @@ async def create_battle_cat_deck_cards() -> list[dict[str, Any]]:
     return list(await asyncio.gather(*tasks))
 
 
+
+
+# ---------------------------------------------------------------------------
+# Stored Battle Cats inventory UI
+# ---------------------------------------------------------------------------
+def _favorite_marker(card: dict[str, Any]) -> str:
+    return "⭐ " if card.get("is_favorite") else ""
+
+
+def create_cats_inventory_page_embed(
+    *, cards: list[dict[str, Any]], page: int, owner: discord.Member | discord.User, per_page: int = 5
+) -> discord.Embed:
+    total_pages = max(1, (len(cards) + per_page - 1) // per_page)
+    start = page * per_page
+    page_cards = cards[start:start + per_page]
+    embed = discord.Embed(
+        title="Battle Cats Inventory",
+        description="⭐ Favorites are shown first. Press a numbered button to view a card.",
+        color=discord.Color.blurple(),
+    )
+    embed.set_author(name=f"{owner.display_name}'s Battle Cats Cards", icon_url=owner.display_avatar.url)
+    for slot, card in enumerate(page_cards, start=1):
+        rarity_cfg = BATTLE_CAT_RARITIES.get(card["rarity"], BATTLE_CAT_RARITIES["Rare"])
+        collab = " • COLLAB" if card.get("is_collab") else ""
+        embed.add_field(
+            name=f"{slot}. {_favorite_marker(card)}{rarity_cfg['emoji']} {card['cat_name']}",
+            value=(
+                f"**{card['rarity']}** {rarity_cfg['stars']} • Quality `{card['quality']}`{collab}\n"
+                f"Card ID: `{card['id']}`"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text=f"Page {page + 1} of {total_pages} • {len(cards)} total cards")
+    return embed
+
+
+def create_cats_inventory_detail_embed(
+    *, card: dict[str, Any], owner: discord.Member | discord.User, position: int, total_cards: int
+) -> discord.Embed:
+    rarity_cfg = BATTLE_CAT_RARITIES.get(card["rarity"], BATTLE_CAT_RARITIES["Rare"])
+    quality_cfg = BATTLE_CAT_QUALITIES.get(card["quality"], BATTLE_CAT_QUALITIES["C"])
+    traits = ", ".join(card.get("traits") or ()) or "None listed"
+    embed = discord.Embed(
+        title=f"{_favorite_marker(card)}{rarity_cfg['emoji']} {card['cat_name']}",
+        description=(
+            f"**Card ID:** `{card['id']}`\n"
+            f"**Rarity:** {card['rarity']} {rarity_cfg['stars']}\n"
+            f"**Quality:** `{card['quality']}` ({quality_cfg['label']})\n"
+            f"**Multiplier:** x{quality_cfg['multiplier']:.2f}\n"
+            f"**Collab:** {'Yes' if card.get('is_collab') else 'No'}\n"
+            f"**Targets:** {traits}"
+        ),
+        color=rarity_cfg["color"],
+    )
+    embed.set_author(name=f"Owned by {owner.display_name}", icon_url=owner.display_avatar.url)
+    if card.get("image_url"):
+        embed.set_image(url=card["image_url"])
+    if card.get("obtained_at") is not None:
+        embed.add_field(
+            name="Obtained",
+            value=discord.utils.format_dt(card["obtained_at"], style="F"),
+            inline=False,
+        )
+    embed.set_footer(text=f"Card {position + 1} of {total_cards}")
+    return embed
+
+
+class CatsInventoryView(discord.ui.View):
+    PER_PAGE = 5
+
+    def __init__(
+        self, *, owner_id: int, owner: discord.Member | discord.User,
+        cards: list[dict[str, Any]], guild_id: int
+    ) -> None:
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.owner = owner
+        self.cards = cards
+        self.guild_id = guild_id
+        self.page = 0
+        self.selected_index: Optional[int] = None
+        self._sync_buttons()
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, (len(self.cards) + self.PER_PAGE - 1) // self.PER_PAGE)
+
+    def page_cards(self) -> list[dict[str, Any]]:
+        start = self.page * self.PER_PAGE
+        return self.cards[start:start + self.PER_PAGE]
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This is not your Battle Cats inventory.", ephemeral=True)
+            return False
+        return True
+
+    def _sync_buttons(self) -> None:
+        page_count = len(self.page_cards())
+        slots = [self.slot1, self.slot2, self.slot3, self.slot4, self.slot5]
+        for index, button in enumerate(slots):
+            button.disabled = self.selected_index is not None or index >= page_count
+            button.label = str(index + 1)
+        self.previous_page.disabled = self.selected_index is not None or self.page == 0
+        self.next_page.disabled = self.selected_index is not None or self.page >= self.total_pages - 1
+        self.back_button.disabled = self.selected_index is None
+        self.favorite_button.disabled = self.selected_index is None
+        if self.selected_index is not None:
+            self.favorite_button.label = (
+                "⭐ Unfavorite" if self.cards[self.selected_index].get("is_favorite") else "☆ Favorite"
+            )
+
+    def current_embed(self) -> discord.Embed:
+        if self.selected_index is None:
+            return create_cats_inventory_page_embed(
+                cards=self.cards, page=self.page, owner=self.owner, per_page=self.PER_PAGE
+            )
+        return create_cats_inventory_detail_embed(
+            card=self.cards[self.selected_index], owner=self.owner,
+            position=self.selected_index, total_cards=len(self.cards)
+        )
+
+    async def _select(self, interaction: discord.Interaction, slot: int) -> None:
+        index = self.page * self.PER_PAGE + slot
+        if index >= len(self.cards):
+            await interaction.response.send_message("No card is in that slot.", ephemeral=True)
+            return
+        self.selected_index = index
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    @discord.ui.button(label="1", style=discord.ButtonStyle.primary, row=0)
+    async def slot1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._select(interaction, 0)
+
+    @discord.ui.button(label="2", style=discord.ButtonStyle.primary, row=0)
+    async def slot2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._select(interaction, 1)
+
+    @discord.ui.button(label="3", style=discord.ButtonStyle.primary, row=0)
+    async def slot3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._select(interaction, 2)
+
+    @discord.ui.button(label="4", style=discord.ButtonStyle.primary, row=0)
+    async def slot4(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._select(interaction, 3)
+
+    @discord.ui.button(label="5", style=discord.ButtonStyle.primary, row=0)
+    async def slot5(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._select(interaction, 4)
+
+    @discord.ui.button(label="Previous", emoji="⬅️", style=discord.ButtonStyle.secondary, row=1)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    @discord.ui.button(label="Back", emoji="↩️", style=discord.ButtonStyle.secondary, row=1)
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.selected_index = None
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    @discord.ui.button(label="☆ Favorite", style=discord.ButtonStyle.success, row=1)
+    async def favorite_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selected_index is None:
+            return
+        card = self.cards[self.selected_index]
+        new_value = not bool(card.get("is_favorite"))
+        changed = set_owned_battle_cat_favorite(
+            guild_id=self.guild_id, user_id=self.owner_id, card_id=card["id"], is_favorite=new_value
+        )
+        if not changed:
+            await interaction.response.send_message("Card not found.", ephemeral=True)
+            return
+        card["is_favorite"] = new_value
+        selected_id = card["id"]
+        self.cards.sort(
+            key=lambda item: (
+                not bool(item.get("is_favorite")),
+                -(item["obtained_at"].timestamp() if item.get("obtained_at") else 0),
+                -item["id"],
+            )
+        )
+        self.selected_index = next(i for i, item in enumerate(self.cards) if item["id"] == selected_id)
+        self.page = self.selected_index // self.PER_PAGE
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    @discord.ui.button(label="Next", emoji="➡️", style=discord.ButtonStyle.secondary, row=1)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+
+
 # ---------------------------------------------------------------------------
 # Slash-command registration
 # ---------------------------------------------------------------------------
@@ -949,55 +1379,167 @@ def register_battle_cats_commands(
     bot: discord.ext.commands.Bot,
     guild: discord.Object,
 ) -> None:
-    """Register Battle Cats card commands on an existing discord.py bot."""
+    """Register stored Battle Cats card commands on an existing discord.py bot."""
+    ensure_battle_cats_schema()
 
     @bot.tree.command(
         name="battle_cat_card",
-        description="Generate a random Battle Cats collectible card preview",
+        description="Draw and store a Battle Cats card (5 per UTC day)",
         guild=guild,
     )
     async def battle_cat_card(interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        if interaction.guild_id is None:
+            await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild_id
+        user_id = interaction.user.id
+        reserved = False
+        stored = False
         try:
+            count = reserve_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="card")
+            if count is None:
+                reset = next_utc_reset_timestamp()
+                await interaction.followup.send(
+                    f"You have used all **{BATTLE_CAT_CARD_DAILY_LIMIT}** Battle Cat card draws today. "
+                    f"Draws reset <t:{reset}:R> at <t:{reset}:F>.",
+                    ephemeral=True,
+                )
+                return
+            reserved = True
+
             card = await create_rendered_battle_cat_card()
             pull: BattleCatPull = card["pull"]
-            rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
-            filename = f"battle_cat_{interaction.user.id}.png"
-            file = discord.File(BytesIO(card["png"]), filename=filename)
+            card_id = save_owned_battle_cat(guild_id=guild_id, user_id=user_id, pull=pull)
+            stored = True
 
+            rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
+            filename = f"battle_cat_{user_id}_{card_id}.png"
+            file = discord.File(BytesIO(card["png"]), filename=filename)
+            remaining = BATTLE_CAT_CARD_DAILY_LIMIT - count
             embed = discord.Embed(
                 title=f"{rarity_cfg['emoji']} {pull.name}",
                 description=(
                     f"**Rarity:** {pull.rarity} {rarity_cfg['stars']}\n"
                     f"**Quality:** `{pull.quality}`\n"
-                    f"**Targets:** {', '.join(pull.traits) if pull.traits else 'None listed'}"
+                    f"**Targets:** {', '.join(pull.traits) if pull.traits else 'None listed'}\n"
+                    f"**Collab:** {'Yes' if pull.is_collab else 'No'}\n\n"
+                    f"Added to `/cats_inventory` as card ID `{card_id}`."
                 ),
                 color=rarity_cfg["color"],
             )
             embed.set_image(url=f"attachment://{filename}")
+            embed.set_footer(
+                text=f"{remaining}/{BATTLE_CAT_CARD_DAILY_LIMIT} single-card draws remaining today"
+            )
             await interaction.followup.send(embed=embed, file=file)
         except Exception as error:
-            log.exception("Failed to generate Battle Cat card: %s", error)
+            log.exception("Failed to draw/store Battle Cat card: %s", error)
             await interaction.followup.send(
-                "An error occurred while generating the Battle Cat card.",
+                "An error occurred while drawing or storing the Battle Cat card. Your daily draw was returned.",
                 ephemeral=True,
             )
+        finally:
+            if reserved and not stored:
+                try:
+                    release_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="card")
+                except Exception:
+                    log.exception("Failed to return Battle Cat card draw for user %s", user_id)
 
     @bot.tree.command(
         name="open_battle_cat_deck",
-        description="Open a seven-card Battle Cats capsule pack",
+        description="Open and store a seven-card Battle Cats pack (3 per UTC day)",
         guild=guild,
     )
     async def open_battle_cat_deck(interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        if interaction.guild_id is None:
+            await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild_id
+        user_id = interaction.user.id
+        reserved = False
+        stored = False
         try:
+            count = reserve_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="deck")
+            if count is None:
+                reset = next_utc_reset_timestamp()
+                await interaction.followup.send(
+                    f"You have opened all **{BATTLE_CAT_DECK_DAILY_LIMIT}** Battle Cats packs today. "
+                    f"Pack openings reset <t:{reset}:R> at <t:{reset}:F>.",
+                    ephemeral=True,
+                )
+                return
+            reserved = True
+
             cards = await create_battle_cat_deck_cards()
-            view = BattleCatDeckView(owner_id=interaction.user.id, cards=cards)
-            await interaction.followup.send(embed=view.cover_embed(), view=view)
+            card_ids = save_owned_battle_cat_pack(guild_id=guild_id, user_id=user_id, cards=cards)
+            for card, card_id in zip(cards, card_ids):
+                card["owned_card_id"] = card_id
+            stored = True
+
+            view = BattleCatDeckView(owner_id=user_id, cards=cards)
+            cover = view.cover_embed()
+            remaining = BATTLE_CAT_DECK_DAILY_LIMIT - count
+            cover.description = (
+                (cover.description or "")
+                + f"\n\nAll **{len(cards)} cards** have been added to `/cats_inventory`."
+                + f"\n**{remaining}/{BATTLE_CAT_DECK_DAILY_LIMIT}** pack openings remaining today."
+            )
+            await interaction.followup.send(embed=cover, view=view)
         except Exception as error:
-            log.exception("Failed to create Battle Cats deck: %s", error)
+            log.exception("Failed to create/store Battle Cats deck: %s", error)
             await interaction.followup.send(
-                "An error occurred while creating the Battle Cats card pack.",
+                "An error occurred while creating or storing the Battle Cats card pack. Your daily pack opening was returned.",
+                ephemeral=True,
+            )
+        finally:
+            if reserved and not stored:
+                try:
+                    release_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="deck")
+                except Exception:
+                    log.exception("Failed to return Battle Cats deck opening for user %s", user_id)
+
+    @bot.tree.command(
+        name="cats_inventory",
+        description="View the Battle Cats cards stored in your collection",
+        guild=guild,
+    )
+    async def cats_inventory(interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        if interaction.guild_id is None:
+            await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+            return
+        try:
+            cards = get_owned_battle_cats(
+                guild_id=interaction.guild_id,
+                user_id=interaction.user.id,
+            )
+            if not cards:
+                embed = discord.Embed(
+                    title="Battle Cats Inventory",
+                    description=(
+                        "You do not own any Battle Cats cards yet.\n\n"
+                        "Use `/battle_cat_card` or `/open_battle_cat_deck` to obtain cards."
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            view = CatsInventoryView(
+                owner_id=interaction.user.id,
+                owner=interaction.user,
+                cards=cards,
+                guild_id=interaction.guild_id,
+            )
+            await interaction.followup.send(embed=view.current_embed(), view=view)
+        except Exception as error:
+            log.exception("Failed to load Battle Cats inventory: %s", error)
+            await interaction.followup.send(
+                "An error occurred while loading your Battle Cats inventory.",
                 ephemeral=True,
             )
 
@@ -1005,21 +1547,28 @@ def register_battle_cats_commands(
 __all__ = [
     "BATTLE_CAT_RARITIES",
     "BATTLE_CAT_QUALITIES",
+    "BATTLE_CAT_CARD_DAILY_LIMIT",
+    "BATTLE_CAT_DECK_DAILY_LIMIT",
     "BATTLE_CATS_WIKI_API",
     "WIKI_CATEGORY_BY_RARITY",
     "BattleCatPull",
     "BattleCatDeckView",
+    "CatsInventoryView",
     "build_battle_cat_card_png",
     "create_battle_cat_deck_cards",
     "create_rendered_battle_cat_card",
+    "draw_battle_cat",
+    "ensure_battle_cats_schema",
     "fetch_battle_cat_roster",
     "fetch_collaboration_cat_titles",
     "fetch_wiki_cat_image_url",
     "fetch_wiki_cat_target_traits",
     "fetch_cat_trait_icons",
     "fetch_trait_icon_url",
-    "draw_battle_cat",
+    "get_owned_battle_cats",
     "register_battle_cats_commands",
     "roll_battle_cat_quality",
     "roll_battle_cat_rarity",
+    "save_owned_battle_cat",
+    "save_owned_battle_cat_pack",
 ]
