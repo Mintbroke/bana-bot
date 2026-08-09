@@ -1849,48 +1849,113 @@ async def _execute_normal_card_pull(interaction: discord.Interaction) -> None:
 async def _execute_deck_pull(
     interaction: discord.Interaction, *, pack_image_url: Optional[str] = None
 ) -> None:
+    """Open a pack using the free daily allowance first, then a Pack Ticket."""
     guild_id = interaction.guild_id
     if guild_id is None:
         await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
         return
+
     user_id = interaction.user.id
-    reserved = False
+    reserved_daily = False
+    consumed_pack_ticket = False
     stored = False
+    payment_source = "daily"
+    daily_count: Optional[int] = None
+    ticket_remaining: Optional[int] = None
+
     try:
-        count = reserve_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="deck")
-        if count is None:
-            reset = next_utc_reset_timestamp()
-            await interaction.followup.send(
-                f"You have opened all **{BATTLE_CAT_DECK_DAILY_LIMIT}** Battle Cats packs today. "
-                f"Pack openings reset <t:{reset}:R> at <t:{reset}:F>.", ephemeral=True
+        # Always spend the free daily pack first. If that allowance is already
+        # exhausted, fall back to one Pack Ticket instead of blocking the user.
+        daily_count = reserve_battle_cat_daily_use(
+            guild_id=guild_id, user_id=user_id, kind="deck"
+        )
+
+        if daily_count is not None:
+            reserved_daily = True
+        else:
+            ticket_remaining = consume_battle_cat_ticket(
+                guild_id=guild_id, user_id=user_id, ticket_type="pack"
             )
-            return
-        reserved = True
+            if ticket_remaining is None:
+                reset = next_utc_reset_timestamp()
+                await interaction.followup.send(
+                    (
+                        f"You have used all **{BATTLE_CAT_DECK_DAILY_LIMIT}** free pack "
+                        f"opening(s) today and you do not have a **Pack Ticket**.\n"
+                        f"Free pack openings reset <t:{reset}:R> at <t:{reset}:F>."
+                    ),
+                    ephemeral=True,
+                )
+                return
+            consumed_pack_ticket = True
+            payment_source = "ticket"
+
         cards = await create_battle_cat_deck_cards()
-        card_ids = save_owned_battle_cat_pack(guild_id=guild_id, user_id=user_id, cards=cards)
+        card_ids = save_owned_battle_cat_pack(
+            guild_id=guild_id, user_id=user_id, cards=cards
+        )
         for card, card_id in zip(cards, card_ids):
             card["owned_card_id"] = card_id
         stored = True
-        view = BattleCatDeckView(owner_id=user_id, cards=cards, pack_image_url=pack_image_url)
+
+        view = BattleCatDeckView(
+            owner_id=user_id, cards=cards, pack_image_url=pack_image_url
+        )
         cover = view.cover_embed()
-        remaining = BATTLE_CAT_DECK_DAILY_LIMIT - count
+
+        if payment_source == "daily":
+            remaining = max(0, BATTLE_CAT_DECK_DAILY_LIMIT - int(daily_count or 0))
+            payment_text = (
+                f"Used your **free daily pack opening**.\n"
+                f"**{remaining}/{BATTLE_CAT_DECK_DAILY_LIMIT}** free pack openings remaining today."
+            )
+        else:
+            payment_text = (
+                "Your free daily pack allowance was already exhausted, so this opening "
+                "used **1 Pack Ticket**.\n"
+                f"**Pack Tickets remaining:** `{ticket_remaining}`"
+            )
+
         cover.description = (cover.description or "") + (
             f"\n\nAll **{len(cards)} cards** have been added to `/cats_inventory`."
-            f"\n**{remaining}/{BATTLE_CAT_DECK_DAILY_LIMIT}** pack openings remaining today."
+            f"\n{payment_text}"
         )
         await interaction.followup.send(embed=cover, view=view)
+
     except Exception as error:
         log.exception("Failed to create/store Battle Cats deck: %s", error)
-        await interaction.followup.send(
-            "An error occurred while creating or storing the Battle Cats card pack. Your daily pack opening was returned.",
-            ephemeral=True,
-        )
+        if payment_source == "ticket":
+            failure_text = (
+                "An error occurred while creating or storing the Battle Cats card pack. "
+                "Your Pack Ticket was returned."
+            )
+        else:
+            failure_text = (
+                "An error occurred while creating or storing the Battle Cats card pack. "
+                "Your daily pack opening was returned."
+            )
+        await interaction.followup.send(failure_text, ephemeral=True)
+
     finally:
-        if reserved and not stored:
-            try:
-                release_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="deck")
-            except Exception:
-                log.exception("Failed to return Battle Cats deck opening for user %s", user_id)
+        if not stored:
+            if reserved_daily:
+                try:
+                    release_battle_cat_daily_use(
+                        guild_id=guild_id, user_id=user_id, kind="deck"
+                    )
+                except Exception:
+                    log.exception(
+                        "Failed to return Battle Cats deck opening for user %s", user_id
+                    )
+            if consumed_pack_ticket:
+                try:
+                    refund_battle_cat_ticket(
+                        guild_id=guild_id, user_id=user_id, ticket_type="pack"
+                    )
+                except Exception:
+                    log.exception(
+                        "Failed to refund Pack Ticket for user %s", user_id
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -2094,8 +2159,9 @@ def register_battle_cats_commands(
                 f"Contains **{BATTLE_CAT_PACK_SIZE} cards**.\n"
                 f"**Daily packs remaining:** `{remaining}/{BATTLE_CAT_DECK_DAILY_LIMIT}`\n"
                 f"📦 **Pack Tickets owned:** `{tickets['pack']}`\n\n"
-                "This normal pack uses your daily allowance; it does **not** consume a Pack Ticket.\n"
-                "Your daily use is consumed only after you press **Confirm**."
+                "The bot uses your **free daily pack opening first**. If no free pack "
+                "opening remains, **1 Pack Ticket** will be consumed instead.\n"
+                "Nothing is consumed until you press **Confirm**."
             ),
             color=discord.Color.orange(),
         )
