@@ -1279,15 +1279,19 @@ class BattleCatDeckView(discord.ui.View):
     def _sync_buttons(self) -> None:
         self.open_button.disabled = self.opened
         self.open_button.label = "Pack Opened" if self.opened else "Open Pack"
+        on_summary = self.opened and self.current_index >= len(self.cards)
         self.back_button.disabled = not self.opened or self.current_index == 0
-        self.next_button.disabled = (
-            not self.opened or self.current_index >= len(self.cards) - 1
+        self.next_button.disabled = not self.opened or on_summary
+        self.next_button.label = (
+            "Summary" if self.opened and self.current_index == len(self.cards) - 1 else "Next"
         )
-        self.favorite_button.disabled = not self.opened
-        if self.opened:
+        self.favorite_button.disabled = not self.opened or on_summary
+        if self.opened and not on_summary:
             self.favorite_button.label = (
                 "⭐ Unfavorite" if self.cards[self.current_index].get("is_favorite") else "☆ Favorite"
             )
+        elif on_summary:
+            self.favorite_button.label = "☆ Favorite"
 
     def cover_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -1306,7 +1310,39 @@ class BattleCatDeckView(discord.ui.View):
         card = self.cards[self.current_index]
         return discord.File(BytesIO(card["png"]), filename=card["filename"])
 
+    def summary_embed(self) -> discord.Embed:
+        lines: list[str] = []
+        rarity_counts: dict[str, int] = {}
+        for index, card in enumerate(self.cards, start=1):
+            pull: BattleCatPull = card["pull"]
+            rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
+            rarity_counts[pull.rarity] = rarity_counts.get(pull.rarity, 0) + 1
+            collab = " • COLLAB" if pull.is_collab else ""
+            lines.append(
+                f"**{index}.** {rarity_cfg['emoji']} **{pull.name}** — "
+                f"{pull.rarity} • Quality `{pull.quality}`{collab}"
+            )
+
+        order = ["Rare", "Super Rare", "Uber Rare", "Bana Rare"]
+        counts_text = " • ".join(
+            f"{BATTLE_CAT_RARITIES[rarity]['emoji']} {rarity}: **{rarity_counts.get(rarity, 0)}**"
+            for rarity in order
+            if rarity_counts.get(rarity, 0)
+        )
+        embed = discord.Embed(
+            title="Pack Summary",
+            description="\n".join(lines),
+            color=discord.Color.orange(),
+        )
+        if counts_text:
+            embed.add_field(name="Rarity Breakdown", value=counts_text, inline=False)
+        embed.set_footer(text=f"All {len(self.cards)} cards are stored in /cats_inventory")
+        return embed
+
     def current_embed(self) -> discord.Embed:
+        if self.current_index >= len(self.cards):
+            return self.summary_embed()
+
         card = self.cards[self.current_index]
         pull: BattleCatPull = card["pull"]
         rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
@@ -1360,19 +1396,26 @@ class BattleCatDeckView(discord.ui.View):
     async def next_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        self.current_index = min(len(self.cards) - 1, self.current_index + 1)
+        self.current_index = min(len(self.cards), self.current_index + 1)
         self._sync_buttons()
-        await interaction.response.edit_message(
-            embed=self.current_embed(),
-            attachments=[self.current_file()],
-            view=self,
-        )
+        if self.current_index >= len(self.cards):
+            await interaction.response.edit_message(
+                embed=self.summary_embed(),
+                attachments=[],
+                view=self,
+            )
+        else:
+            await interaction.response.edit_message(
+                embed=self.current_embed(),
+                attachments=[self.current_file()],
+                view=self,
+            )
 
     @discord.ui.button(label="☆ Favorite", style=discord.ButtonStyle.success, row=0)
     async def favorite_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not self.opened:
+        if not self.opened or self.current_index >= len(self.cards):
             return
         card = self.cards[self.current_index]
         card_id = card.get("owned_card_id")
@@ -2086,7 +2129,7 @@ def register_battle_cats_commands(
 
     @bot.tree.command(
         name="legend_pull",
-        description="Use 1 Legend Ticket for a guaranteed Legend Rare Battle Cat card",
+        description="Use 1 Legend Ticket: 95% Uber Rare, 5% Legend / Bana Rare",
         guild=guild,
     )
     async def legend_pull(interaction: discord.Interaction) -> None:
@@ -2097,7 +2140,9 @@ def register_battle_cats_commands(
         embed = discord.Embed(
             title="Confirm Legend Pull",
             description=(
-                "Guaranteed **Legend / Bana Rare** Battle Cat card.\n\n"
+                "**Legend Ticket odds:**\n"
+                "🟡 **Uber Rare:** `95%`\n"
+                "🌈 **Legend / Bana Rare:** `5%`\n\n"
                 f"🌈 **Legend Tickets:** `{balances['legend']}`\n"
                 "**Cost:** `1 Legend Ticket`\n\n"
                 "The ticket is consumed only after you press **Confirm**."
@@ -2106,7 +2151,12 @@ def register_battle_cats_commands(
         )
         embed.set_image(url=LEGEND_PULL_IMAGE)
         async def executor(component_interaction: discord.Interaction) -> None:
-            await _execute_ticket_pull(component_interaction, ticket_type="legend", fixed_rarity="Bana Rare")
+            rarity = "Bana Rare" if random.random() < 0.05 else "Uber Rare"
+            await _execute_ticket_pull(
+                component_interaction,
+                ticket_type="legend",
+                fixed_rarity=rarity,
+            )
         await interaction.response.send_message(
             embed=embed, view=PullConfirmationView(owner_id=interaction.user.id, executor=executor)
         )
