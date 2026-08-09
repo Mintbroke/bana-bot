@@ -107,6 +107,15 @@ _WIKI_TRAIT_ICON_URL_CACHE: dict[str, str] = {}
 _WIKI_COLLAB_TITLES_CACHE: set[str] | None = None
 _WIKI_CACHE_LOCK: asyncio.Lock | None = None
 
+BATTLE_CAT_PACK_IMAGES: list[str] = [
+    "https://cdn.discordapp.com/attachments/928447198746804265/1535807553689092126/image.png?ex=6a791bbe&is=6a77ca3e&hm=03ea1d27ff5833efbb15b3b89d255e2c0d54bb29bf3bd6af3d5023cdaf94dc91&",
+    "https://cdn.discordapp.com/attachments/928447198746804265/1535807554083364934/image.png?ex=6a791bbe&is=6a77ca3e&hm=1ce30159d89a99db191b90463bcdb9cc4445f769cc47c6597d939702bb1cc13c&",
+    "https://cdn.discordapp.com/attachments/928447198746804265/1535807554465300630/image.png?ex=6a791bbe&is=6a77ca3e&hm=c3bd10350c8de82e56c3b94a3c0681887e30ba1ca9772ab235e574fe75879c68&",
+    "https://cdn.discordapp.com/attachments/928447198746804265/1535807555106897920/image.png?ex=6a791bbf&is=6a77ca3f&hm=bd1c6e81e8432955ed558e104c014e1e21a3abe4ce1d759f5b396bf40421fcfc&",
+    "https://cdn.discordapp.com/attachments/928447198746804265/1535807555652026388/image.png?ex=6a791bbf&is=6a77ca3f&hm=cee9247cb939b7f3bb841faf4b013cb61028f22e4b5015a4751fd41bdb5d13b8&",
+    "https://cdn.discordapp.com/attachments/928447198746804265/1535807556109213776/image.png?ex=6a791bbf&is=6a77ca3f&hm=d600b203bdfd063015837ac7f231023ec34bf08e1455dc4c2e30d329aa237b0b&",
+]
+
 # Battle Cats Wiki trait icon filenames. These are the same official icon names
 # used by the wiki's trait modules/categories.
 TRAIT_ICON_FILES: dict[str, str] = {
@@ -1055,6 +1064,7 @@ class BattleCatDeckView(discord.ui.View):
         self.cards = cards
         self.current_index = 0
         self.opened = False
+        self.pack_image_url = random.choice(BATTLE_CAT_PACK_IMAGES)
 
         for index, card in enumerate(cards, start=1):
             card["filename"] = f"battle_cat_card_{owner_id}_{index}.png"
@@ -1079,7 +1089,7 @@ class BattleCatDeckView(discord.ui.View):
         )
 
     def cover_embed(self) -> discord.Embed:
-        return discord.Embed(
+        embed = discord.Embed(
             title="Battle Cats Rare Capsule Card Pack",
             description=(
                 f"Contains **{len(self.cards)} Battle Cat cards**.\n"
@@ -1088,6 +1098,8 @@ class BattleCatDeckView(discord.ui.View):
             ),
             color=discord.Color.orange(),
         )
+        embed.set_thumbnail(url=self.pack_image_url)
+        return embed
 
     def current_file(self) -> discord.File:
         card = self.cards[self.current_index]
@@ -1181,14 +1193,18 @@ def _favorite_marker(card: dict[str, Any]) -> str:
 
 
 def create_cats_inventory_page_embed(
-    *, cards: list[dict[str, Any]], page: int, owner: discord.Member | discord.User, per_page: int = 5
+    *, cards: list[dict[str, Any]], page: int, owner: discord.Member | discord.User,
+    per_page: int = 5, rarity_filter: str = "All"
 ) -> discord.Embed:
     total_pages = max(1, (len(cards) + per_page - 1) // per_page)
     start = page * per_page
     page_cards = cards[start:start + per_page]
     embed = discord.Embed(
         title="Battle Cats Inventory",
-        description="⭐ Favorites are shown first. Press a numbered button to view a card.",
+        description=(
+            f"⭐ Favorites are shown first. **Rarity filter:** `{rarity_filter}`\n"
+            "Press a numbered button to view a card."
+        ),
         color=discord.Color.blurple(),
     )
     embed.set_author(name=f"{owner.display_name}'s Battle Cats Cards", icon_url=owner.display_avatar.url)
@@ -1238,6 +1254,36 @@ def create_cats_inventory_detail_embed(
     return embed
 
 
+class CatsRarityFilterSelect(discord.ui.Select):
+    def __init__(self, inventory_view: "CatsInventoryView") -> None:
+        self.inventory_view = inventory_view
+        options = [
+            discord.SelectOption(label="All rarities", value="All", emoji="📚", default=True),
+            discord.SelectOption(label="Rare", value="Rare", emoji="⚪"),
+            discord.SelectOption(label="Super Rare", value="Super Rare", emoji="🟢"),
+            discord.SelectOption(label="Uber Rare", value="Uber Rare", emoji="🟡"),
+            discord.SelectOption(label="Legend / Bana Rare", value="Bana Rare", emoji="🌈"),
+        ]
+        super().__init__(
+            placeholder="Filter inventory by rarity",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        rarity = self.values[0]
+        self.inventory_view.apply_rarity_filter(rarity)
+        for option in self.options:
+            option.default = option.value == rarity
+        self.inventory_view._sync_buttons()
+        await interaction.response.edit_message(
+            embed=self.inventory_view.current_embed(),
+            view=self.inventory_view,
+        )
+
+
 class CatsInventoryView(discord.ui.View):
     PER_PAGE = 5
 
@@ -1248,10 +1294,13 @@ class CatsInventoryView(discord.ui.View):
         super().__init__(timeout=180)
         self.owner_id = owner_id
         self.owner = owner
+        self.all_cards = cards
         self.cards = cards
         self.guild_id = guild_id
+        self.rarity_filter = "All"
         self.page = 0
         self.selected_index: Optional[int] = None
+        self.add_item(CatsRarityFilterSelect(self))
         self._sync_buttons()
 
     @property
@@ -1267,6 +1316,15 @@ class CatsInventoryView(discord.ui.View):
             await interaction.response.send_message("This is not your Battle Cats inventory.", ephemeral=True)
             return False
         return True
+
+    def apply_rarity_filter(self, rarity: str) -> None:
+        self.rarity_filter = rarity
+        if rarity == "All":
+            self.cards = list(self.all_cards)
+        else:
+            self.cards = [card for card in self.all_cards if card.get("rarity") == rarity]
+        self.page = 0
+        self.selected_index = None
 
     def _sync_buttons(self) -> None:
         page_count = len(self.page_cards())
@@ -1286,7 +1344,8 @@ class CatsInventoryView(discord.ui.View):
     def current_embed(self) -> discord.Embed:
         if self.selected_index is None:
             return create_cats_inventory_page_embed(
-                cards=self.cards, page=self.page, owner=self.owner, per_page=self.PER_PAGE
+                cards=self.cards, page=self.page, owner=self.owner, per_page=self.PER_PAGE,
+                rarity_filter=self.rarity_filter
             )
         return create_cats_inventory_detail_embed(
             card=self.cards[self.selected_index], owner=self.owner,
@@ -1348,13 +1407,17 @@ class CatsInventoryView(discord.ui.View):
             return
         card["is_favorite"] = new_value
         selected_id = card["id"]
-        self.cards.sort(
+        self.all_cards.sort(
             key=lambda item: (
                 not bool(item.get("is_favorite")),
                 -(item["obtained_at"].timestamp() if item.get("obtained_at") else 0),
                 -item["id"],
             )
         )
+        if self.rarity_filter == "All":
+            self.cards = list(self.all_cards)
+        else:
+            self.cards = [item for item in self.all_cards if item.get("rarity") == self.rarity_filter]
         self.selected_index = next(i for i, item in enumerate(self.cards) if item["id"] == selected_id)
         self.page = self.selected_index // self.PER_PAGE
         self._sync_buttons()
