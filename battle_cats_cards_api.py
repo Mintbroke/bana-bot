@@ -10,7 +10,7 @@ The module intentionally mirrors the structure of the existing /pal_card and
 
 * weighted rarity + quality rolls
 * Pillow-rendered collectible card PNGs
-* /battle_cat_card for one random preview card
+* /battle_cat_card for one stored random card
 * /open_battle_cat_deck for an interactive seven-card pack
 * last card in a pack is guaranteed Super Rare or better
 
@@ -452,7 +452,11 @@ async def download_trait_icon_bytes(icon_pairs: tuple[tuple[str, str], ...]) -> 
 
 BATTLE_CAT_PACK_SIZE = 7
 BATTLE_CAT_CARD_DAILY_LIMIT = 5
-BATTLE_CAT_DECK_DAILY_LIMIT = 3
+BATTLE_CAT_DECK_DAILY_LIMIT = 1
+
+NORMAL_CARD_PULL_IMAGE = "https://cdn.discordapp.com/attachments/928447198746804265/1535813548951732244/images.png?ex=6a792154&is=6a77cfd4&hm=d74d6d9e0ebc5b88d252aa782e5a1138a0cf3caf82ebcdcbf7f6ba7673008dee&"
+PLATINUM_PULL_IMAGE = "https://cdn.discordapp.com/attachments/928447198746804265/1535813594862583858/latest.png?ex=6a79215f&is=6a77cfdf&hm=098bc8ab22ccb1840989923ab0cbbae03c5318cfe95362c52e619c47695f9327&"
+LEGEND_PULL_IMAGE = "https://cdn.discordapp.com/attachments/928447198746804265/1535813612923260989/700.png?ex=6a792163&is=6a77cfe3&hm=51fda2aa161fe947cf7039370df72cea69caecb04d539649cb8cace497499be0&"
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +482,13 @@ def ensure_battle_cats_schema() -> None:
                         is_collab BOOLEAN NOT NULL DEFAULT FALSE,
                         traits_json TEXT NOT NULL DEFAULT '[]',
                         is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
+                        level INTEGER NOT NULL DEFAULT 1 CHECK (level >= 1),
                         obtained_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
+                """)
+                cur.execute("""
+                    ALTER TABLE test_owned_battle_cats
+                    ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1;
                 """)
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_test_owned_battle_cats_user
@@ -495,7 +504,7 @@ def ensure_battle_cats_schema() -> None:
                         card_draw_count INTEGER NOT NULL DEFAULT 0
                             CHECK (card_draw_count >= 0 AND card_draw_count <= 5),
                         deck_open_count INTEGER NOT NULL DEFAULT 0
-                            CHECK (deck_open_count >= 0 AND deck_open_count <= 3),
+                            CHECK (deck_open_count >= 0 AND deck_open_count <= 1),
                         PRIMARY KEY (guild_id, user_id, roll_date)
                     );
                 """)
@@ -575,6 +584,27 @@ def release_battle_cat_daily_use(*, guild_id: int, user_id: int, kind: str) -> N
                       AND card_draw_count = 0
                       AND deck_open_count = 0;
                 """, (guild_id, user_id))
+    finally:
+        conn.close()
+
+
+def get_battle_cat_daily_counts(*, guild_id: int, user_id: int) -> dict[str, int]:
+    """Return today's UTC single-card and deck usage without reserving anything."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT card_draw_count, deck_open_count
+                FROM test_battle_cat_daily_limits
+                WHERE guild_id = %s
+                  AND user_id = %s
+                  AND roll_date = (NOW() AT TIME ZONE 'UTC')::date;
+                """,
+                (guild_id, user_id),
+            )
+            row = cur.fetchone()
+        return {"card": int(row[0]), "deck": int(row[1])} if row else {"card": 0, "deck": 0}
     finally:
         conn.close()
 
@@ -790,7 +820,7 @@ def get_owned_battle_cats(*, guild_id: int, user_id: int) -> list[dict[str, Any]
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT id, cat_name, wiki_title, rarity, quality, banner, image_url,
-                       is_collab, traits_json, is_favorite, obtained_at
+                       is_collab, traits_json, is_favorite, level, obtained_at
                 FROM test_owned_battle_cats
                 WHERE guild_id = %s AND user_id = %s
                 ORDER BY is_favorite DESC, obtained_at DESC, id DESC;
@@ -806,7 +836,7 @@ def get_owned_battle_cats(*, guild_id: int, user_id: int) -> list[dict[str, Any]
                 "id": int(row[0]), "cat_name": str(row[1]), "wiki_title": str(row[2]),
                 "rarity": str(row[3]), "quality": str(row[4]), "banner": str(row[5]),
                 "image_url": str(row[6] or ""), "is_collab": bool(row[7]),
-                "traits": traits, "is_favorite": bool(row[9]), "obtained_at": row[10],
+                "traits": traits, "is_favorite": bool(row[9]), "level": int(row[10]), "obtained_at": row[11],
             })
         return result
     finally:
@@ -1221,16 +1251,19 @@ async def create_rendered_battle_cat_card(
 # Interactive pack UI
 # ---------------------------------------------------------------------------
 class BattleCatDeckView(discord.ui.View):
-    def __init__(self, *, owner_id: int, cards: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, *, owner_id: int, cards: list[dict[str, Any]], pack_image_url: Optional[str] = None
+    ) -> None:
         super().__init__(timeout=300)
         self.owner_id = owner_id
         self.cards = cards
         self.current_index = 0
         self.opened = False
-        self.pack_image_url = random.choice(BATTLE_CAT_PACK_IMAGES)
+        self.pack_image_url = pack_image_url or random.choice(BATTLE_CAT_PACK_IMAGES)
 
         for index, card in enumerate(cards, start=1):
             card["filename"] = f"battle_cat_card_{owner_id}_{index}.png"
+            card.setdefault("is_favorite", False)
 
         self._sync_buttons()
 
@@ -1250,6 +1283,11 @@ class BattleCatDeckView(discord.ui.View):
         self.next_button.disabled = (
             not self.opened or self.current_index >= len(self.cards) - 1
         )
+        self.favorite_button.disabled = not self.opened
+        if self.opened:
+            self.favorite_button.label = (
+                "⭐ Unfavorite" if self.cards[self.current_index].get("is_favorite") else "☆ Favorite"
+            )
 
     def cover_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -1276,6 +1314,7 @@ class BattleCatDeckView(discord.ui.View):
 
         trait_text = ", ".join(pull.traits) if pull.traits else "None listed"
         description = (
+            f"**Level:** `1`\n"
             f"**Rarity:** {rarity_cfg['emoji']} {pull.rarity} {rarity_cfg['stars']}\n"
             f"**Quality:** `{pull.quality}`\n"
             f"**Targets:** {trait_text}"
@@ -1329,6 +1368,31 @@ class BattleCatDeckView(discord.ui.View):
             view=self,
         )
 
+    @discord.ui.button(label="☆ Favorite", style=discord.ButtonStyle.success, row=0)
+    async def favorite_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not self.opened:
+            return
+        card = self.cards[self.current_index]
+        card_id = card.get("owned_card_id")
+        if card_id is None:
+            await interaction.response.send_message("This card has not been stored yet.", ephemeral=True)
+            return
+        new_value = not bool(card.get("is_favorite"))
+        changed = set_owned_battle_cat_favorite(
+            guild_id=interaction.guild_id,
+            user_id=self.owner_id,
+            card_id=int(card_id),
+            is_favorite=new_value,
+        )
+        if not changed:
+            await interaction.response.send_message("Card not found in your inventory.", ephemeral=True)
+            return
+        card["is_favorite"] = new_value
+        self._sync_buttons()
+        await interaction.response.edit_message(view=self)
+
     async def on_timeout(self) -> None:
         for item in self.children:
             if isinstance(item, discord.ui.Button):
@@ -1378,7 +1442,7 @@ def create_cats_inventory_page_embed(
             name=f"{slot}. {_favorite_marker(card)}{rarity_cfg['emoji']} {card['cat_name']}",
             value=(
                 f"**{card['rarity']}** {rarity_cfg['stars']} • Quality `{card['quality']}`{collab}\n"
-                f"Card ID: `{card['id']}`"
+                f"Level: **{card.get('level', 1)}** • Card ID: `{card['id']}`"
             ),
             inline=False,
         )
@@ -1396,6 +1460,7 @@ def create_cats_inventory_detail_embed(
         title=f"{_favorite_marker(card)}{rarity_cfg['emoji']} {card['cat_name']}",
         description=(
             f"**Card ID:** `{card['id']}`\n"
+            f"**Level:** `{card.get('level', 1)}`\n"
             f"**Rarity:** {card['rarity']} {rarity_cfg['stars']}\n"
             f"**Quality:** `{card['quality']}` ({quality_cfg['label']})\n"
             f"**Multiplier:** x{quality_cfg['multiplier']:.2f}\n"
@@ -1495,6 +1560,7 @@ class CatsInventoryView(discord.ui.View):
         for index, button in enumerate(slots):
             button.disabled = self.selected_index is not None or index >= page_count
             button.label = str(index + 1)
+        self.first_page.disabled = self.selected_index is not None or self.page == 0
         self.previous_page.disabled = self.selected_index is not None or self.page == 0
         self.next_page.disabled = self.selected_index is not None or self.page >= self.total_pages - 1
         self.back_button.disabled = self.selected_index is None
@@ -1543,6 +1609,12 @@ class CatsInventoryView(discord.ui.View):
     @discord.ui.button(label="5", style=discord.ButtonStyle.primary, row=0)
     async def slot5(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._select(interaction, 4)
+
+    @discord.ui.button(label="First", emoji="⏮️", style=discord.ButtonStyle.secondary, row=1)
+    async def first_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = 0
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
 
     @discord.ui.button(label="Previous", emoji="⬅️", style=discord.ButtonStyle.secondary, row=1)
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1598,47 +1670,96 @@ class CatsInventoryView(discord.ui.View):
                 item.disabled = True
 
 
-async def _send_ticket_pull(
-    interaction: discord.Interaction,
-    *,
-    ticket_type: str,
-    fixed_rarity: str,
+class DrawFavoriteView(discord.ui.View):
+    """Favorite/unfavorite a newly drawn single card directly from its result."""
+    def __init__(self, *, guild_id: int, owner_id: int, card_id: int) -> None:
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.owner_id = owner_id
+        self.card_id = card_id
+        self.is_favorite = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Only the owner can favorite this card.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="☆ Favorite", style=discord.ButtonStyle.secondary)
+    async def favorite(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        new_value = not self.is_favorite
+        changed = set_owned_battle_cat_favorite(
+            guild_id=self.guild_id, user_id=self.owner_id, card_id=self.card_id, is_favorite=new_value
+        )
+        if not changed:
+            await interaction.response.send_message("Card not found in your inventory.", ephemeral=True)
+            return
+        self.is_favorite = new_value
+        button.label = "⭐ Favorited" if new_value else "☆ Favorite"
+        button.style = discord.ButtonStyle.success if new_value else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(view=self)
+
+
+class PullConfirmationView(discord.ui.View):
+    """Owner-only confirmation gate. No limit/ticket is consumed until Confirm."""
+    def __init__(self, *, owner_id: int, executor) -> None:
+        super().__init__(timeout=120)
+        self.owner_id = owner_id
+        self.executor = executor
+        self.used = False
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This confirmation is not for you.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm", emoji="✅", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if self.used:
+            await interaction.response.send_message("This confirmation has already been used.", ephemeral=True)
+            return
+        self.used = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.executor(interaction)
+
+    @discord.ui.button(label="Cancel", emoji="✖️", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.used = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Pull cancelled.", embed=None, view=self)
+
+
+async def _execute_ticket_pull(
+    interaction: discord.Interaction, *, ticket_type: str, fixed_rarity: str
 ) -> None:
-    """Consume one special ticket, render/store the card, and refund on failure."""
-    await interaction.response.defer()
-    if interaction.guild_id is None:
+    guild_id = interaction.guild_id
+    if guild_id is None:
         await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
         return
-
-    guild_id = interaction.guild_id
     user_id = interaction.user.id
     consumed = False
     stored = False
     try:
-        remaining = consume_battle_cat_ticket(
-            guild_id=guild_id,
-            user_id=user_id,
-            ticket_type=ticket_type,
-        )
+        remaining = consume_battle_cat_ticket(guild_id=guild_id, user_id=user_id, ticket_type=ticket_type)
         if remaining is None:
-            await interaction.followup.send(
-                f"You do not have a **{TICKET_LABELS[ticket_type]}**.",
-                ephemeral=True,
-            )
+            await interaction.followup.send(f"You do not have a **{TICKET_LABELS[ticket_type]}**.", ephemeral=True)
             return
         consumed = True
-
         card = await create_rendered_battle_cat_card(fixed_rarity=fixed_rarity)
         pull: BattleCatPull = card["pull"]
         card_id = save_owned_battle_cat(guild_id=guild_id, user_id=user_id, pull=pull)
         stored = True
-
         rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
         filename = f"battle_cat_{ticket_type}_{user_id}_{card_id}.png"
         file = discord.File(BytesIO(card["png"]), filename=filename)
         embed = discord.Embed(
             title=f"{rarity_cfg['emoji']} {pull.name}",
             description=(
+                f"**Level:** `1`\n"
                 f"**Rarity:** {pull.rarity} {rarity_cfg['stars']}\n"
                 f"**Quality:** `{pull.quality}`\n"
                 f"**Targets:** {', '.join(pull.traits) if pull.traits else 'None listed'}\n"
@@ -1649,7 +1770,10 @@ async def _send_ticket_pull(
             color=rarity_cfg["color"],
         )
         embed.set_image(url=f"attachment://{filename}")
-        await interaction.followup.send(embed=embed, file=file)
+        await interaction.followup.send(
+            embed=embed, file=file,
+            view=DrawFavoriteView(guild_id=guild_id, owner_id=user_id, card_id=card_id),
+        )
     except Exception as error:
         log.exception("Failed %s Battle Cats ticket pull: %s", ticket_type, error)
         await interaction.followup.send(
@@ -1659,13 +1783,114 @@ async def _send_ticket_pull(
     finally:
         if consumed and not stored:
             try:
-                refund_battle_cat_ticket(
-                    guild_id=guild_id,
-                    user_id=user_id,
-                    ticket_type=ticket_type,
-                )
+                refund_battle_cat_ticket(guild_id=guild_id, user_id=user_id, ticket_type=ticket_type)
             except Exception:
                 log.exception("Failed to refund %s ticket for user %s", ticket_type, user_id)
+
+
+async def _execute_normal_card_pull(interaction: discord.Interaction) -> None:
+    guild_id = interaction.guild_id
+    if guild_id is None:
+        await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+        return
+    user_id = interaction.user.id
+    reserved = False
+    stored = False
+    try:
+        count = reserve_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="card")
+        if count is None:
+            reset = next_utc_reset_timestamp()
+            await interaction.followup.send(
+                f"You have used all **{BATTLE_CAT_CARD_DAILY_LIMIT}** Battle Cat card draws today. "
+                f"Draws reset <t:{reset}:R> at <t:{reset}:F>.", ephemeral=True
+            )
+            return
+        reserved = True
+        card = await create_rendered_battle_cat_card()
+        pull: BattleCatPull = card["pull"]
+        card_id = save_owned_battle_cat(guild_id=guild_id, user_id=user_id, pull=pull)
+        stored = True
+        rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
+        filename = f"battle_cat_{user_id}_{card_id}.png"
+        file = discord.File(BytesIO(card["png"]), filename=filename)
+        remaining = BATTLE_CAT_CARD_DAILY_LIMIT - count
+        embed = discord.Embed(
+            title=f"{rarity_cfg['emoji']} {pull.name}",
+            description=(
+                f"**Level:** `1`\n"
+                f"**Rarity:** {pull.rarity} {rarity_cfg['stars']}\n"
+                f"**Quality:** `{pull.quality}`\n"
+                f"**Targets:** {', '.join(pull.traits) if pull.traits else 'None listed'}\n"
+                f"**Collab:** {'Yes' if pull.is_collab else 'No'}\n\n"
+                f"Added to `/cats_inventory` as card ID `{card_id}`."
+            ),
+            color=rarity_cfg["color"],
+        )
+        embed.set_image(url=f"attachment://{filename}")
+        embed.set_footer(text=f"{remaining}/{BATTLE_CAT_CARD_DAILY_LIMIT} single-card draws remaining today")
+        await interaction.followup.send(
+            embed=embed, file=file,
+            view=DrawFavoriteView(guild_id=guild_id, owner_id=user_id, card_id=card_id),
+        )
+    except Exception as error:
+        log.exception("Failed to draw/store Battle Cat card: %s", error)
+        await interaction.followup.send(
+            "An error occurred while drawing or storing the Battle Cat card. Your daily draw was returned.",
+            ephemeral=True,
+        )
+    finally:
+        if reserved and not stored:
+            try:
+                release_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="card")
+            except Exception:
+                log.exception("Failed to return Battle Cat card draw for user %s", user_id)
+
+
+async def _execute_deck_pull(
+    interaction: discord.Interaction, *, pack_image_url: Optional[str] = None
+) -> None:
+    guild_id = interaction.guild_id
+    if guild_id is None:
+        await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+        return
+    user_id = interaction.user.id
+    reserved = False
+    stored = False
+    try:
+        count = reserve_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="deck")
+        if count is None:
+            reset = next_utc_reset_timestamp()
+            await interaction.followup.send(
+                f"You have opened all **{BATTLE_CAT_DECK_DAILY_LIMIT}** Battle Cats packs today. "
+                f"Pack openings reset <t:{reset}:R> at <t:{reset}:F>.", ephemeral=True
+            )
+            return
+        reserved = True
+        cards = await create_battle_cat_deck_cards()
+        card_ids = save_owned_battle_cat_pack(guild_id=guild_id, user_id=user_id, cards=cards)
+        for card, card_id in zip(cards, card_ids):
+            card["owned_card_id"] = card_id
+        stored = True
+        view = BattleCatDeckView(owner_id=user_id, cards=cards, pack_image_url=pack_image_url)
+        cover = view.cover_embed()
+        remaining = BATTLE_CAT_DECK_DAILY_LIMIT - count
+        cover.description = (cover.description or "") + (
+            f"\n\nAll **{len(cards)} cards** have been added to `/cats_inventory`."
+            f"\n**{remaining}/{BATTLE_CAT_DECK_DAILY_LIMIT}** pack openings remaining today."
+        )
+        await interaction.followup.send(embed=cover, view=view)
+    except Exception as error:
+        log.exception("Failed to create/store Battle Cats deck: %s", error)
+        await interaction.followup.send(
+            "An error occurred while creating or storing the Battle Cats card pack. Your daily pack opening was returned.",
+            ephemeral=True,
+        )
+    finally:
+        if reserved and not stored:
+            try:
+                release_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="deck")
+            except Exception:
+                log.exception("Failed to return Battle Cats deck opening for user %s", user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1773,7 +1998,26 @@ def register_battle_cats_commands(
         guild=guild,
     )
     async def platinum_pull(interaction: discord.Interaction) -> None:
-        await _send_ticket_pull(interaction, ticket_type="platinum", fixed_rarity="Uber Rare")
+        if interaction.guild_id is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        balances = get_battle_cat_tickets(guild_id=interaction.guild_id, user_id=interaction.user.id)
+        embed = discord.Embed(
+            title="Confirm Platinum Pull",
+            description=(
+                "Guaranteed **Uber Rare** Battle Cat card.\n\n"
+                f"💿 **Platinum Tickets:** `{balances['platinum']}`\n"
+                "**Cost:** `1 Platinum Ticket`\n\n"
+                "The ticket is consumed only after you press **Confirm**."
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.set_image(url=PLATINUM_PULL_IMAGE)
+        async def executor(component_interaction: discord.Interaction) -> None:
+            await _execute_ticket_pull(component_interaction, ticket_type="platinum", fixed_rarity="Uber Rare")
+        await interaction.response.send_message(
+            embed=embed, view=PullConfirmationView(owner_id=interaction.user.id, executor=executor)
+        )
 
     @bot.tree.command(
         name="legend_pull",
@@ -1781,7 +2025,26 @@ def register_battle_cats_commands(
         guild=guild,
     )
     async def legend_pull(interaction: discord.Interaction) -> None:
-        await _send_ticket_pull(interaction, ticket_type="legend", fixed_rarity="Bana Rare")
+        if interaction.guild_id is None:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        balances = get_battle_cat_tickets(guild_id=interaction.guild_id, user_id=interaction.user.id)
+        embed = discord.Embed(
+            title="Confirm Legend Pull",
+            description=(
+                "Guaranteed **Legend / Bana Rare** Battle Cat card.\n\n"
+                f"🌈 **Legend Tickets:** `{balances['legend']}`\n"
+                "**Cost:** `1 Legend Ticket`\n\n"
+                "The ticket is consumed only after you press **Confirm**."
+            ),
+            color=discord.Color.red(),
+        )
+        embed.set_image(url=LEGEND_PULL_IMAGE)
+        async def executor(component_interaction: discord.Interaction) -> None:
+            await _execute_ticket_pull(component_interaction, ticket_type="legend", fixed_rarity="Bana Rare")
+        await interaction.response.send_message(
+            embed=embed, view=PullConfirmationView(owner_id=interaction.user.id, executor=executor)
+        )
 
     @bot.tree.command(
         name="battle_cat_card",
@@ -1789,119 +2052,59 @@ def register_battle_cats_commands(
         guild=guild,
     )
     async def battle_cat_card(interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
         if interaction.guild_id is None:
-            await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
-
-        guild_id = interaction.guild_id
-        user_id = interaction.user.id
-        reserved = False
-        stored = False
-        try:
-            count = reserve_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="card")
-            if count is None:
-                reset = next_utc_reset_timestamp()
-                await interaction.followup.send(
-                    f"You have used all **{BATTLE_CAT_CARD_DAILY_LIMIT}** Battle Cat card draws today. "
-                    f"Draws reset <t:{reset}:R> at <t:{reset}:F>.",
-                    ephemeral=True,
-                )
-                return
-            reserved = True
-
-            card = await create_rendered_battle_cat_card()
-            pull: BattleCatPull = card["pull"]
-            card_id = save_owned_battle_cat(guild_id=guild_id, user_id=user_id, pull=pull)
-            stored = True
-
-            rarity_cfg = BATTLE_CAT_RARITIES[pull.rarity]
-            filename = f"battle_cat_{user_id}_{card_id}.png"
-            file = discord.File(BytesIO(card["png"]), filename=filename)
-            remaining = BATTLE_CAT_CARD_DAILY_LIMIT - count
-            embed = discord.Embed(
-                title=f"{rarity_cfg['emoji']} {pull.name}",
-                description=(
-                    f"**Rarity:** {pull.rarity} {rarity_cfg['stars']}\n"
-                    f"**Quality:** `{pull.quality}`\n"
-                    f"**Targets:** {', '.join(pull.traits) if pull.traits else 'None listed'}\n"
-                    f"**Collab:** {'Yes' if pull.is_collab else 'No'}\n\n"
-                    f"Added to `/cats_inventory` as card ID `{card_id}`."
-                ),
-                color=rarity_cfg["color"],
-            )
-            embed.set_image(url=f"attachment://{filename}")
-            embed.set_footer(
-                text=f"{remaining}/{BATTLE_CAT_CARD_DAILY_LIMIT} single-card draws remaining today"
-            )
-            await interaction.followup.send(embed=embed, file=file)
-        except Exception as error:
-            log.exception("Failed to draw/store Battle Cat card: %s", error)
-            await interaction.followup.send(
-                "An error occurred while drawing or storing the Battle Cat card. Your daily draw was returned.",
-                ephemeral=True,
-            )
-        finally:
-            if reserved and not stored:
-                try:
-                    release_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="card")
-                except Exception:
-                    log.exception("Failed to return Battle Cat card draw for user %s", user_id)
+        counts = get_battle_cat_daily_counts(guild_id=interaction.guild_id, user_id=interaction.user.id)
+        tickets = get_battle_cat_tickets(guild_id=interaction.guild_id, user_id=interaction.user.id)
+        remaining = max(0, BATTLE_CAT_CARD_DAILY_LIMIT - counts["card"])
+        embed = discord.Embed(
+            title="Confirm Battle Cat Card Draw",
+            description=(
+                f"**Daily draws remaining:** `{remaining}/{BATTLE_CAT_CARD_DAILY_LIMIT}`\n"
+                f"🎟️ **Rare Tickets owned:** `{tickets['rare']}`\n\n"
+                "This normal draw uses your daily allowance; it does **not** consume a Rare Ticket.\n"
+                "Your daily use is consumed only after you press **Confirm**."
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_image(url=NORMAL_CARD_PULL_IMAGE)
+        async def executor(component_interaction: discord.Interaction) -> None:
+            await _execute_normal_card_pull(component_interaction)
+        await interaction.response.send_message(
+            embed=embed, view=PullConfirmationView(owner_id=interaction.user.id, executor=executor)
+        )
 
     @bot.tree.command(
         name="open_battle_cat_deck",
-        description="Open and store a seven-card Battle Cats pack (3 per UTC day)",
+        description="Open and store a seven-card Battle Cats pack (1 per UTC day)",
         guild=guild,
     )
     async def open_battle_cat_deck(interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
         if interaction.guild_id is None:
-            await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
-
-        guild_id = interaction.guild_id
-        user_id = interaction.user.id
-        reserved = False
-        stored = False
-        try:
-            count = reserve_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="deck")
-            if count is None:
-                reset = next_utc_reset_timestamp()
-                await interaction.followup.send(
-                    f"You have opened all **{BATTLE_CAT_DECK_DAILY_LIMIT}** Battle Cats packs today. "
-                    f"Pack openings reset <t:{reset}:R> at <t:{reset}:F>.",
-                    ephemeral=True,
-                )
-                return
-            reserved = True
-
-            cards = await create_battle_cat_deck_cards()
-            card_ids = save_owned_battle_cat_pack(guild_id=guild_id, user_id=user_id, cards=cards)
-            for card, card_id in zip(cards, card_ids):
-                card["owned_card_id"] = card_id
-            stored = True
-
-            view = BattleCatDeckView(owner_id=user_id, cards=cards)
-            cover = view.cover_embed()
-            remaining = BATTLE_CAT_DECK_DAILY_LIMIT - count
-            cover.description = (
-                (cover.description or "")
-                + f"\n\nAll **{len(cards)} cards** have been added to `/cats_inventory`."
-                + f"\n**{remaining}/{BATTLE_CAT_DECK_DAILY_LIMIT}** pack openings remaining today."
-            )
-            await interaction.followup.send(embed=cover, view=view)
-        except Exception as error:
-            log.exception("Failed to create/store Battle Cats deck: %s", error)
-            await interaction.followup.send(
-                "An error occurred while creating or storing the Battle Cats card pack. Your daily pack opening was returned.",
-                ephemeral=True,
-            )
-        finally:
-            if reserved and not stored:
-                try:
-                    release_battle_cat_daily_use(guild_id=guild_id, user_id=user_id, kind="deck")
-                except Exception:
-                    log.exception("Failed to return Battle Cats deck opening for user %s", user_id)
+        counts = get_battle_cat_daily_counts(guild_id=interaction.guild_id, user_id=interaction.user.id)
+        tickets = get_battle_cat_tickets(guild_id=interaction.guild_id, user_id=interaction.user.id)
+        remaining = max(0, BATTLE_CAT_DECK_DAILY_LIMIT - counts["deck"])
+        pack_image = random.choice(BATTLE_CAT_PACK_IMAGES)
+        embed = discord.Embed(
+            title="Confirm Battle Cats Card Pack",
+            description=(
+                f"Contains **{BATTLE_CAT_PACK_SIZE} cards**.\n"
+                f"**Daily packs remaining:** `{remaining}/{BATTLE_CAT_DECK_DAILY_LIMIT}`\n"
+                f"📦 **Pack Tickets owned:** `{tickets['pack']}`\n\n"
+                "This normal pack uses your daily allowance; it does **not** consume a Pack Ticket.\n"
+                "Your daily use is consumed only after you press **Confirm**."
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.set_image(url=pack_image)
+        async def executor(component_interaction: discord.Interaction) -> None:
+            await _execute_deck_pull(component_interaction, pack_image_url=pack_image)
+        await interaction.response.send_message(
+            embed=embed, view=PullConfirmationView(owner_id=interaction.user.id, executor=executor)
+        )
 
     @bot.tree.command(
         name="cats_inventory",
@@ -1961,6 +2164,7 @@ __all__ = [
     "create_battle_cat_deck_cards",
     "create_rendered_battle_cat_card",
     "draw_battle_cat",
+    "get_battle_cat_daily_counts",
     "get_battle_cat_tickets",
     "add_battle_cat_tickets",
     "consume_battle_cat_ticket",
